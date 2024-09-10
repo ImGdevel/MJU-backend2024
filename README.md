@@ -1,2 +1,4 @@
-# MJU-BackendSoftware-WSH
-MJU-BackendSoftware-WooSeungHwa
+# Backend2024
+#개인정보
+-이름: 우승화
+-학번: 60192218
