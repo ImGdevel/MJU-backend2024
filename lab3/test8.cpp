@@ -7,7 +7,7 @@
 #include <iostream>
 #include <string>
 
-#define BUF 10000
+#define BUF 65536
 
 using namespace std;
 
@@ -27,15 +27,16 @@ int main(){
         cerr << strerror(errno) << endl;
     }
 
-    char buf[BUF];
-    memset(buf, 0 , sizeof(buf));
     cout << "Server Started..." << endl;
+    char buf[BUF];
     int recv_size;
+    
     while (true)
     {
+        memset(buf, 0 , sizeof(buf));
         if((recv_size = recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr*)&recv_sin, &recv_sin_size)) < 0){
             cerr << strerror(errno) << endl;
-            return 1;
+            continue;
         }
         
         //확인 용
@@ -43,7 +44,7 @@ int main(){
 
         if(sendto(s, buf,  recv_size, 0, (struct sockaddr*)&recv_sin, recv_sin_size) < 0){
             cerr << strerror(errno) << endl;
-            return 1;
+            continue;
         }
     }
     
