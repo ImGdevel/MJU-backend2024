@@ -18,7 +18,7 @@ int main(){
     struct sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
-    sin.sin_port = htons(10114);
+    sin.sin_port = htons(10001);
     sin.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if(connect(s, (struct sockaddr *)&sin, sizeof(sin)) < 0){

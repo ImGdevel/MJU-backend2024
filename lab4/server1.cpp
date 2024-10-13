@@ -51,7 +51,7 @@ int main(){
     }else if(numRecv < 0){
         cerr << "recv() failed: " << strerror(errno) << endl;
     }else{
-        cout << "Recived: " << numRecv << "Bytes" << clientSock << endl;
+        cout << "Recived: " << numRecv << " Bytes, clientSock " << clientSock << endl;
     }
 
     int offset = 0;
