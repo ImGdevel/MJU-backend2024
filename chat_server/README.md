@@ -90,3 +90,37 @@ $ python3 /path/server.py --port={port번호}
 * 만일 대화 방에 있는 경우 해당 채팅 메시지는 본인을 제외한 나머지 모든 멤버들에게 전송되어야 합니다. 
 
 
+# 아케택쳐 설계
+
+## Reactor-Worker 패턴
+
+검색해보니 요구사항에 알맞는 아키택쳐가 바로 Reactor-Worker 패턴으로 보인다.
+Reactor가 클라이언트의 요청을 받아 (I/O Multiplexting) Worker에게 전달하고 Worker가 작업을 처리하는 것으로 보인다.
+
+Reactor에서 TCP소캣으로 클라이언트로 요청을 비동기 I/O Multiplexing으로 수신하면 WorkerQueue에 전달하고
+각 Worker는 WorkkerQueue에 있는 작업을 처리(소바)하는 형태가 될 것으로 추정된다.
+
+필요에 따라 EventHandler, MessageBroker, ClientSession, ThreadPool을 구현한다.
+
+정리하면 아래와 같이 구현하게 된다.
+
+### Reactor : 이벤트 감지 및 분배
+- I/O 이벤트를 감지하고 작업을 Worer에세 분배하는 역활을 수행한다.
+
+### Worker : 작업 수행
+- Reactor에서 분배된 작업을 처리한다.
+
+### EventHandler: I/O 이벤트 처리
+- Reactor가 I/O 이벤트를 감지 했을때 구체적인 어떤 작업을 수행할지 결정
+
+### ClientSession: 클라이언트별 연결 관리
+- 클라이언트간의 연결을 관리한다. 클라이언트가 서버에 접속할 때마다 개별적인 Client샤션을 생성하여 클라이언트 상태와 데이터를 보관한다.
+- (필요 없는 경우 배제한다)
+
+### MessageBroker: 메시지 전달 및 라우팅
+- 클라이언트 간 메시지를 중개하거나, 특정 규칙에 따라 메시지를 라우팅 해야할 때
+
+### ThreadPool : Thread 관리
+- Worker 쓰레드를 생성, 모니터링, 종료 등을 쓰레드 관리를 담담한다.
+
+
