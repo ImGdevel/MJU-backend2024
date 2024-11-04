@@ -5,7 +5,7 @@ ChatServer::ChatServer(int port) : reactor(new Reactor(port)){
 }
 
 ChatServer::~ChatServer(){
-    //리소스 정리
+    delete reactor;
 }
 
 void ChatServer::run(){

@@ -14,6 +14,7 @@ Reactor::Reactor(int serverPort): serverPort(serverPort){
 
 Reactor::~Reactor(){
     // todo : 리소스 정리
+    close(serverSock);
 }
 
 /// @brief Reactor 초기 설정 : Server socket 설정
