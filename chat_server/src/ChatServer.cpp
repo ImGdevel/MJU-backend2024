@@ -1,8 +1,7 @@
 #include "ChatServer.h"
 
-ChatServer::ChatServer(int port) : serverPort(port){
+ChatServer::ChatServer(int port) : reactor(new Reactor(port)){
     // 초기화 진행
-    
 }
 
 ChatServer::~ChatServer(){
@@ -11,11 +10,12 @@ ChatServer::~ChatServer(){
 
 void ChatServer::run(){
     // 기본적인 실행 흐름
-
-    reactor = new Reactor(serverPort);
-    reactor->init();
-    reactor->run();
-
-
+    try {
+        reactor->init();
+        reactor->run();
+    }
+    catch(const runtime_error& e){
+        cerr << e.what() << endl;
+    }
 }
 

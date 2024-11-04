@@ -20,9 +20,7 @@ Reactor::~Reactor(){
 void Reactor::init(){
     serverSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(serverSock < 0){
-        cerr <<  "socket() failed: " << strerror(errno) << endl;
-        // todo : socket 연결 실패 처리
-        return;
+        throw runtime_error(string("socket failed: ") + strerror(errno));
     }
 
     struct sockaddr_in sin;
@@ -32,15 +30,11 @@ void Reactor::init(){
     sin.sin_addr.s_addr = INADDR_ANY;
 
     if(bind(serverSock, (struct sockaddr *)&sin, sizeof(sin)) < 0){
-        cerr << "bind() failed: " << strerror(errno) << endl;
-        // todo : bind 연결 실패 처리
-        return;
+        throw runtime_error(string("bind failed: ") + strerror(errno));
     }
 
     if(listen(serverSock, 10) < 0){
-        cerr << "listen() failed: " << strerror(errno) << endl;
-        // todo : listen 실패처리
-        return;
+        throw runtime_error(string("listen failed: ") + strerror(errno));
     }
 }
 

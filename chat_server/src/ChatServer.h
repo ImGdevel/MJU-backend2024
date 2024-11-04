@@ -16,7 +16,6 @@ public:
     void run();
 
 private:
-    int serverPort;
     Reactor* reactor;
 
 };
