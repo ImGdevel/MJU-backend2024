@@ -2,8 +2,11 @@
 #define CHAT_SERVER
 
 #include <iostream>
-
+#include "Reactor.h"
 using namespace std;
+
+class Reactor;
+class WorkerPool;
 
 class ChatServer{
 public:
@@ -14,7 +17,8 @@ public:
 
 private:
     int serverPort;
-    
+    Reactor* reactor;
+
 };
 
 #endif
