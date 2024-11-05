@@ -17,7 +17,7 @@ public:
 
 private:
     Reactor* reactor;
-
+    int serverPort;
 };
 
 #endif

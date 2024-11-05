@@ -11,7 +11,7 @@
 
 using namespace std;
 
-Reactor::Reactor(int serverPort): serverPort(serverPort){
+Reactor::Reactor(){
     // todo : 필요한 초기 설정
 }
 
@@ -21,7 +21,7 @@ Reactor::~Reactor(){
 }
 
 /// @brief Reactor 초기 설정 : Server socket 설정
-void Reactor::init(){
+void Reactor::init(int serverPort){
     serverSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(serverSock < 0){
         throw runtime_error(string("socket failed: ") + strerror(errno));
@@ -67,6 +67,7 @@ void Reactor::run(){
         }
 
         int numReady = select(maxFd + 1, &readFd, NULL, NULL, NULL);
+
         if (numReady < 0) {
             cerr << "select() failed: " << strerror(errno) << endl;
             continue;
@@ -82,18 +83,21 @@ void Reactor::run(){
             memset(&clinetSin, 0, sizeof(clinetSin));
             int clinetSock = accept(serverSock, (struct sockaddr*)& clinetSin, &clientSinSize);
 
+
             if(clinetSock >= 0){
                 // 클라이언트 연결 등록
+                // 클라이언트 등록
                 string clientAddr = inet_ntoa(clinetSin.sin_addr);
                 int clinetPort = ntohs(clinetSin.sin_port);
-                cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientAddr  << ")";
-                // 클라이언트 등록
-                clientSocks.insert(clinetSock);
+                cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientAddr  << ")\n";
+
             }else {
                 // todo : 연결 실패시 처리
             }
         }
-
     }
+}
 
+void Reactor::connectClient(int sock){
+    
 }

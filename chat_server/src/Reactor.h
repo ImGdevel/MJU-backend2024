@@ -3,16 +3,17 @@
 
 class Reactor{
 public:
-    Reactor(int serverPort);
+    Reactor();
     ~Reactor();
 
-    void init();
+    void init(int port);
     void run();
+
+    void connectClient(int sock);
     
 private:
 
     int serverSock;
-    int serverPort;
     
 };
 
