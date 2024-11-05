@@ -67,16 +67,33 @@ void Reactor::run(){
         }
 
         int numReady = select(maxFd + 1, &readFd, NULL, NULL, NULL);
-            if (numReady < 0) {
-                cerr << "select() failed: " << strerror(errno) << endl;
-                continue;
-            } else if (numReady == 0) {
-                continue;
+        if (numReady < 0) {
+            cerr << "select() failed: " << strerror(errno) << endl;
+            continue;
+        } else if (numReady == 0) {
+            continue;
+        }
+
+        
+
+        if(FD_ISSET(serverSock, &readFd)){
+            struct sockaddr_in clinetSin;
+            socklen_t clientSinSize = sizeof(clinetSin);
+            memset(&clinetSin, 0, sizeof(clinetSin));
+            int clinetSock = accept(serverSock, (struct sockaddr*)& clinetSin, &clientSinSize);
+
+            if(clinetSock >= 0){
+                // 클라이언트 연결 등록
+                string clientAddr = inet_ntoa(clinetSin.sin_addr);
+                int clinetPort = ntohs(clinetSin.sin_port);
+                cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientAddr  << ")";
+                // 클라이언트 등록
+                clientSocks.insert(clinetSock);
+            }else {
+                // todo : 연결 실패시 처리
             }
         }
 
-        if(FD_ISSET(serverSock, &readFd)){
-            
-        }
+    }
 
 }
