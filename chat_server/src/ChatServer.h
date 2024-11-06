@@ -1,22 +1,19 @@
 #ifndef CHAT_SERVER
 #define CHAT_SERVER
 
-#include <iostream>
-#include "Reactor.h"
-using namespace std;
-
 class Reactor;
 class WorkerPool;
 
 class ChatServer{
 public:
-    ChatServer(int port);
+    ChatServer(int port, int thread);
     ~ChatServer();
 
     void run();
 
 private:
     Reactor* reactor;
+    WorkerPool* workerPool;
     int serverPort;
 };
 

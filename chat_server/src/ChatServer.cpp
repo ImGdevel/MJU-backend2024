@@ -1,6 +1,12 @@
 #include "ChatServer.h"
+#include "Reactor.h"
+#include "WorkerPool.h"
 
-ChatServer::ChatServer(int port) : serverPort(port),  reactor(new Reactor()){
+#include <iostream>
+
+using namespace std;
+
+ChatServer::ChatServer(int port = 8080, int thread = 2) : serverPort(port), reactor(new Reactor()), workerPool(new WorkerPool(thread)) {
     // 초기화 진행
 }
 

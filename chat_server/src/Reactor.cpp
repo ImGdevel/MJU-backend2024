@@ -66,7 +66,11 @@ void Reactor::run(){
             }
         }
 
+        cout << "Waitting..." << endl;
+
         int numReady = select(maxFd + 1, &readFd, NULL, NULL, NULL);
+
+        cout << "Event Get!!" << endl;
 
         if (numReady < 0) {
             cerr << "select() failed: " << strerror(errno) << endl;
@@ -78,6 +82,7 @@ void Reactor::run(){
         
 
         if(FD_ISSET(serverSock, &readFd)){
+            cout << "Connect?" << endl;
             struct sockaddr_in clinetSin;
             socklen_t clientSinSize = sizeof(clinetSin);
             memset(&clinetSin, 0, sizeof(clinetSin));
@@ -90,7 +95,17 @@ void Reactor::run(){
                 string clientAddr = inet_ntoa(clinetSin.sin_addr);
                 int clinetPort = ntohs(clinetSin.sin_port);
                 cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientAddr  << ")\n";
+                clientSocks.insert(clinetSock);
+                
+                char buf[10000];
+                int recvSize = recv(clinetSock, buf, sizeof(buf), 0);
+                cout << "recv :" << buf << " size :" << recvSize << endl;
 
+                int sendSize = send(clinetSock, buf, recvSize, 0);
+                cout << "send :" << buf << " size :" << sendSize << endl;
+                
+                FD_CLR(clinetSock, &readFd);
+                close(clinetSock);
             }else {
                 // todo : 연결 실패시 처리
             }
@@ -99,5 +114,5 @@ void Reactor::run(){
 }
 
 void Reactor::connectClient(int sock){
-    
+
 }
