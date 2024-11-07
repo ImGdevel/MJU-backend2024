@@ -34,7 +34,6 @@ int main() {
     while (cin >> buf) {
 
         int sendSize = send(s, buf, strlen(buf), MSG_NOSIGNAL); 
-        
         if (sendSize < 0) {
             cerr << "send() failed: " << strerror(errno) << endl;
             break;
@@ -42,20 +41,16 @@ int main() {
             cout << "Sent: " << sendSize << " bytes" << endl;
         }
         
-        memset(buf, 0, sizeof(buf)); 
+        memset(buf, 0, sizeof(buf));
 
-        int recvSize;
-        while ((recvSize = recv(s, buf, sizeof(buf), 0)) > 0) {
-            cout << "Received: " << recvSize << " bytes" << endl;
-            memset(buf, 0, sizeof(buf)); 
-        }
-        
-        if (recvSize < 0) {
-            cerr << "recv() failed: " << strerror(errno) << endl;
-            break;
+        int recvSize = recv(s, buf, sizeof(buf), 0);
+        if (recvSize > 0) {
+            buf[recvSize] = '\0';
+            cout << "Received: " << recvSize << " bytes, message: " << buf << endl;
         } else if (recvSize == 0) {
-            cout << "Socket closed by server." << endl;
-            break;
+            cout << "Connection closed by server." << endl;
+        } else {
+            cerr << "recv() failed: " << strerror(errno) << endl;
         }
     }
 
