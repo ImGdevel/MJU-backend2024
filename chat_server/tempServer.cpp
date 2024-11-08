@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -17,7 +18,7 @@ using namespace std;
 
 #define BUF 65536
 #define PORT 10114
-#define THREAD_COUNT 2
+#define THREAD_COUNT 4
 
 atomic<bool> quitWorker(false);
 atomic<bool> runServer(true);
@@ -28,9 +29,7 @@ queue<int> taskQueue;
 mutex taskQueueMutex;
 condition_variable taskCV;
 
-
 string msgType = "json";
-
 
 
 void sendMessage(int socket,  string& message) {
@@ -58,6 +57,7 @@ string receiveMessage(int socket){
     int recvByte = recv(socket, &recvDataSize, sizeof(recvDataSize), 0);
     if(recvByte <= 0){
         // todo : 실패 처리 (데이터를 받기 실패했거나 클라이언트 종료)
+        throw runtime_error("recv error");
     }
     recvDataSize = htons(recvDataSize);
     
@@ -66,6 +66,7 @@ string receiveMessage(int socket){
         recvByte = recv(socket, buffer + totalReceived, recvDataSize - totalReceived, 0);
         if (recvByte <= 0) {
             // todo : 실패 처리 (데이터를 받기 실패했거나 클라이언트 종료)
+            throw runtime_error("recv error");
         }
         totalReceived += recvByte;
     }
@@ -79,7 +80,7 @@ string receiveMessage(int socket){
 // 클라이언트 세션 관리
 class Clinet{
 public:
-    Clinet(string ip, int port): name(ip), ip(ip), port(port), connect(true), enterChatroom(-1) {}  
+    Clinet(string ip, int port): name(ip + ", " + to_string(port)), ip(ip), port(port), enterChatroom(-1) {}  
     
     void setName(string name){
         this->name = name;
@@ -87,6 +88,10 @@ public:
 
     int getEnterChatroom(){
         return enterChatroom;
+    }
+
+    void setEnterChatroom(int roomId){
+        this->enterChatroom = roomId;
     }
 
     string getName(){
@@ -97,26 +102,57 @@ private:
     string name;
     string ip;
     int port;
-    bool connect;
     int enterChatroom;
 };
 
 map<int, Clinet*> clinetSessions;
 
 
+class ClientSession {
+public:
+    static ClientSession& getInstance() {
+        static ClientSession instance;
+        return instance;
+    }
+
+    void addClientSession(int sock, string& ip, int port){
+        clinetSessions.insert({sock, new Clinet(ip, port)});
+    }
+
+    void deleteClientSession(int sock){
+        clinetSessions.erase(sock);
+    }
+
+    Clinet* getClientSession(int sock){
+        return clinetSessions[sock];
+    }
+
+    bool isSessionExists(int sock){
+    if(clinetSessions.find(sock) == clinetSessions.end()){
+        cerr << "Not Found Client Session: " << sock << endl;
+        throw runtime_error("세션 없음");
+    }
+}
+
+
+private:
+    ClientSession() {}
+    map<int, Clinet*> clinetSessions;
+};
+
 class Room {
 public:
     Room(int roomId, const string& title) : roomId(roomId), title(title) {}
 
-    bool joinChatRoom(int sock) {
-        return members.insert(sock).second;
+    bool joinChatRoom(int id) {
+        return members.insert(id).second;
     }
 
-    bool leaveChatRoom(int sock) {
-        return members.erase(sock) > 0;
+    bool leaveChatRoom(int id) {
+        return members.erase(id) > 0;
     }
 
-    set<int> getJoinedClients() const {
+    unordered_set<int> getMembers() const {
         return members;
     }
 
@@ -124,10 +160,22 @@ public:
         return title;
     }
 
+    int getRoomId() const {
+        return roomId;
+    }
+
+    json toJson() const {
+        return nlohmann::json{
+            {"roomId", to_string(getRoomId())},
+            {"title", getTitle()},
+            {"members", vector<string>()}
+        };
+    }
+
 private:
     int roomId;
     string title;
-    set<int> members;
+    unordered_set<int> members;
 };
 
 class ChatRoomManager {
@@ -137,57 +185,105 @@ public:
         return instance;
     }
 
-    Room& createChatroom(const string& title) {
-        lastRoomId++;
-        rooms.emplace(lastRoomId, Room(lastRoomId, title));
-        return rooms.at(lastRoomId);
+    Room& createChatRoom(const string& title) {
+        int roomId = ++lastRoomId;
+        rooms.emplace_back(roomId, title);
+        return rooms.back();
     }
 
-    bool joinChatroom(int roomId, int client) {
-        Room* room = getChatroom(roomId);
-        return room && room->joinChatRoom(client);
+    bool joinChatRoom(int roomId, int client) {
+        int index = roomId - 1;
+        if (index >= 0 && index < rooms.size()) {
+            return rooms[index].joinChatRoom(client);
+        }
+        return false;
     }
 
-    bool leaveChatroom(int roomId, int client) {
-        Room* room = getChatroom(roomId);
-        return room && room->leaveChatRoom(client);
+    bool leaveChatRoom(int roomId, int client) {
+        int index = roomId - 1;
+        if (index >= 0 && index < rooms.size()) {
+            return rooms[index].leaveChatRoom(client);
+        }
+        return false;
     }
 
-    Room* getChatroom(int roomId) {
-        auto it = rooms.find(roomId);
-        return (it != rooms.end()) ? &(it->second) : nullptr;
+    Room* getChatRoom(int roomId) {
+        int index = roomId - 1;
+        if (index >= 0 && index < rooms.size()) {
+            return &rooms[index];
+        }
+        return nullptr;
     }
 
-    bool isChatroomExists(int roomId) const {
-        return rooms.find(roomId) != rooms.end();
+    bool isChatRoomExists(int roomId) const {
+        int index = roomId - 1;
+        return index >= 0 && index < rooms.size();
+    }
+
+    const vector<Room>& getRooms() const {
+        return rooms;
+    }
+
+    json toJson() const {
+        json jsonRooms = json::array();
+        for (const auto& room : rooms) {
+            jsonRooms.push_back(room.toJson());
+        }
+        return jsonRooms;
     }
 
 private:
     ChatRoomManager() : lastRoomId(0) {}
 
-    unordered_map<int, Room> rooms;
+    vector<Room> rooms; 
     int lastRoomId;
 };
-
-// utils JsonFomat으로 만듬
-string makeJsonFormat(string& message){
-    json data = {
-        { "type" , "SCSystemMessage"},
-        { "text", message }
-    };
-    return data.dump();
-}
 
 
 void checkSession(int sock){
     if(clinetSessions.find(sock) == clinetSessions.end()){
-        // 클라이언트 세션이 존재하는 경우
         cerr << "Not Found Client Session: " << sock << endl;
-        // todo : 에러 처리
         throw runtime_error("세션 없음");
     }
-    
 }
+
+//////////////////////////
+// Message
+/////////////////////////
+
+void sendSystemMessage(int sock, string& message){
+    json data = {
+        { "type" , "SCSystemMessage"},
+        { "text", message }
+    };
+    string msg = data.dump();
+    sendMessage(sock , msg);
+}
+
+void sendChat(int sock, string& message){
+    json data = {
+        { "type" , "SCSystemMessage"},
+        { "text", message }
+    };
+    string msg = data.dump();
+    sendMessage(sock , msg);
+}
+
+void sendRoomInfomation(int sock, ChatRoomManager& roomInfo){
+    json data = {
+        { "type" , "SCRoomsResult"},
+        { "text", roomInfo.toJson() }
+    };
+    string msg = data.dump();
+    sendMessage(sock , msg);
+}
+
+
+
+//////////////////////////
+// handleer
+/////////////////////////
+
 
 // 클라이언트 이름 변경
 void handleMessageCSName(int sock, string& message){
@@ -199,10 +295,9 @@ void handleMessageCSName(int sock, string& message){
     
     // todo: System Message
     string systemMessage = "이름이 " +  name + " 으로 변경되었습니다.";
-    string messageSend = makeJsonFormat(systemMessage);
 
     if(clinet->getEnterChatroom() < 0){
-        sendMessage(sock ,messageSend);
+        sendSystemMessage(sock , systemMessage);
     }else{
         // 채팅 방에 들어간 경우
         // todo : 같은 채팅방에 들어간 클라이언트 객체들에게 전부 전송
@@ -210,10 +305,10 @@ void handleMessageCSName(int sock, string& message){
 
 }
 
+// 방 개설 목록 반환
 void handleMessageCSRooms(int sock, string& message){
-    cout << "Rooms" << endl;
-    
-    
+    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+    sendRoomInfomation(sock, chatRoomManager);
 }
 
 // 새로운 방을 만드는 이벤트
@@ -221,92 +316,103 @@ void handleMessageCSCreateRoom(int sock, string& message){
     json data = json::parse(message);
     string title = data["title"];
     
-    ChatRoomManager chatRoomManager = ChatRoomManager::getInstance();
-    Room chatRoom = chatRoomManager.createChatroom(title);
+    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+    Room chatRoom = chatRoomManager.createChatRoom(title);
     chatRoom.joinChatRoom(sock);
-
-    string log = "방제[" + title + "] 방에 입장했습니다.";
-    string msg = makeJsonFormat(log);
-    sendMessage(sock , msg);
+    Clinet* clinet = clinetSessions[sock];
+    clinet->setEnterChatroom(chatRoom.getRoomId());
+    
+    string systemMessage = "방제[" + title + "] 방에 입장했습니다.";
+    sendSystemMessage(sock, systemMessage);
 }
 
 void handleMessageCSJoinRoom(int sock, string& message){
-    cout << "?" << endl;
     Clinet* clinet = clinetSessions[sock];
+
     if(clinet->getEnterChatroom() >= 0){
-        //이미 클라이언트가 방에 입장한 상태임
-        string log = "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
-        string msg = makeJsonFormat(log);
-        sendMessage(sock , msg);
+        string systemMessage = "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
+        sendSystemMessage(sock, systemMessage);
         return;
     }
 
-    cout << "??" << endl;
 
     json data = json::parse(message);
     int roomId = data["roomId"];
-    ChatRoomManager chatRoomManager = ChatRoomManager::getInstance();
-
-    cout << "???" << endl;
-    if(chatRoomManager.isChatroomExists(roomId)){
-        string log = "대화방이 존재하지 않습니다.";
-        string msg = makeJsonFormat(log);
-        sendMessage(sock , msg);
+    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+    if(!chatRoomManager.isChatRoomExists(roomId)){
+        string systemMessage = "대화방이 존재하지 않습니다.";
+        sendSystemMessage(sock, systemMessage);
         return;
     }
 
-    cout << "????" << endl;
-    Room* chatRoom = chatRoomManager.getChatroom(roomId);
-    chatRoomManager.joinChatroom(roomId, sock);
-
-    cout << "?????" << endl;
+    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
+    chatRoomManager.joinChatRoom(roomId, sock);
     
     // todo : 방에 성공적으로 입장함
-    string log = "방제[" + chatRoom->getTitle() + "] 방에 입장했습니다.";
-    string msg = makeJsonFormat(log);
-    sendMessage(sock , msg);
+    string systemMessage = "방제[" + chatRoom->getTitle() + "] 방에 입장했습니다.";
+    sendSystemMessage(sock, systemMessage);
+    clinet->setEnterChatroom(chatRoom->getRoomId());
 
-    log = "[" + clinet->getName() + "] 님이 입장했습니다.";
-    msg = makeJsonFormat(log);
-    for(int clinetSock : chatRoom->getJoinedClients()){
-        
+    systemMessage = "[" + clinet->getName() + "] 님이 입장했습니다.";
+    sendSystemMessage(sock, systemMessage);
+    for(int clinetSock : chatRoom->getMembers()){
         if(clinetSock != sock){
-            sendMessage(clinetSock, msg);
+            sendMessage(clinetSock, systemMessage);
         }
     }
 
 }
 
 void handleMessageCSLeaveRoom(int sock, string& message){
-    cout << "LeaveRoom" << endl;
+    Clinet* clinet = clinetSessions[sock];
+    int roomId = clinet->getEnterChatroom();
+    if(roomId < 0){
+        string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
+        sendSystemMessage(sock, systemMessage);
+        return;
+    }
+    
+    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
+    chatRoomManager.joinChatRoom(roomId, sock);
+    clinet->setEnterChatroom(-1);
+
+    string systemMessage = "방제[" + chatRoom->getTitle() + "] 대화 방에서 퇴장했습니다.";
+    sendSystemMessage(sock, systemMessage);
+    
+    systemMessage = "[" + clinet->getName() + "] 님이 퇴장했습니다.";
+
+    for(int clinetSock : chatRoom->getMembers()){
+        
+        if(clinetSock != sock){
+            sendSystemMessage(sock, systemMessage);
+        }
+    }
 }
 
 void handleMessageCSChat(int sock, string& message){
-    cout << "Chat" << endl;
 
     // todo : 채팅방에 들어가 있는지 확인
     Clinet* clinet = clinetSessions[sock];
     int roomId = clinet->getEnterChatroom();
     if(roomId < 0){
         //이미 클라이언트가 방에 입장한 상태임
-        string log = "현재 대화방에 들어가 있지 않습니다.";
-        string msg = makeJsonFormat(log);
-        sendMessage(sock , msg);
+        string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
+        sendSystemMessage(sock, systemMessage);
         return;
     }
     
     json data = json::parse(message);
     string text = data["text"];
 
-    // 들어 가있다면 채팅처리
+    // 들어가 있다면 채팅처리
     ChatRoomManager chatRoomManager = ChatRoomManager::getInstance();
-    Room* chatRoom = chatRoomManager.getChatroom(roomId);
+    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
     
-    string log = "(" + clinet->getName() + "): " + text;
-    string jsonMsg = makeJsonFormat(log);
-    for(int clinetSock : chatRoom->getJoinedClients()){
+    string chatText = "(" + clinet->getName() + "): " + text;
+    for(int clinetSock : chatRoom->getMembers()){
         if(clinetSock != sock){
-            sendMessage(clinetSock, jsonMsg);
+            sendChat(clinetSock, chatText);
         }
     }
 }
@@ -371,10 +477,13 @@ void task() {
             taskQueue.pop();
         }
 
-        string messages = receiveMessage(taskSock);
-
-        // 메시지 타입에 따라 이벤트 handler
-        handleJsonMessage(taskSock, messages);
+        try{
+            string messages = receiveMessage(taskSock);
+            handleJsonMessage(taskSock, messages);
+        } catch(const runtime_error& e){
+            cout << "연결 종료" << endl;
+            clinetSessions.erase(taskSock);
+        }
     }
 }
 
@@ -407,6 +516,9 @@ int main() {
     fd_set readFd;
     int maxFd = 0;
     
+
+    cout << "Server Stared..." << endl;
+
     while (runServer.load()) {
         FD_ZERO(&readFd);
         FD_SET(serverSock, &readFd);
@@ -449,7 +561,7 @@ int main() {
         for (auto& client : clinetSessions) {
             int clientSock = client.first;
             if (FD_ISSET(clientSock, &readFd)) {
-                //cout << "Client " << clientSock << "와 통신 중..." << endl;
+                cout << "Client " << clientSock << "와 통신 중..." << endl;
                 {
                     unique_lock<mutex> lock(taskQueueMutex);
                     taskQueue.push(clientSock);
