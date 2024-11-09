@@ -23,7 +23,6 @@ using namespace std;
 atomic<bool> quitWorker(false);
 atomic<bool> runServer(true);
 
-
 vector<thread> workerPool;
 queue<int> taskQueue;
 mutex taskQueueMutex;
@@ -31,53 +30,15 @@ condition_variable taskCV;
 
 string msgType = "json";
 
+int verbosity = 1;
 
-void sendMessage(int socket,  string& message) {
+void sendMessage(int socket,  string& message);
+string receiveMessage(int socket);
 
-    uint16_t dataSize = htons(message.length());
-    vector<char> sendBuffer(sizeof(dataSize) + message.length());
+//////////////////////////
+// Clinet
+/////////////////////////
 
-    memcpy(sendBuffer.data(), &dataSize, sizeof(dataSize));
-    memcpy(sendBuffer.data() + sizeof(dataSize), message.c_str(), message.length());
-
-    int sendSize = send(socket, sendBuffer.data(), sendBuffer.size(), MSG_NOSIGNAL);
-    if (sendSize < 0) {
-        cerr << "Send() failed: " << strerror(errno) << endl;
-    } else {
-        cout << "Sent: " << sendSize << " bytes" << endl;
-    }
-}
-
-
-
-string receiveMessage(int socket){
-    uint16_t recvDataSize = 0;
-    char buffer[1024]; 
-
-    int recvByte = recv(socket, &recvDataSize, sizeof(recvDataSize), 0);
-    if(recvByte <= 0){
-        // todo : 실패 처리 (데이터를 받기 실패했거나 클라이언트 종료)
-        throw runtime_error("recv error");
-    }
-    recvDataSize = htons(recvDataSize);
-    
-    int totalReceived = 0;
-    while (totalReceived < recvDataSize) {
-        recvByte = recv(socket, buffer + totalReceived, recvDataSize - totalReceived, 0);
-        if (recvByte <= 0) {
-            // todo : 실패 처리 (데이터를 받기 실패했거나 클라이언트 종료)
-            throw runtime_error("recv error");
-        }
-        totalReceived += recvByte;
-    }
-
-    string recivedData(buffer, recvDataSize);
-    cout << "Recived Data: " << recivedData << " size(" << recvDataSize  << ")"<< endl;
-    return recivedData;
-}
-
-
-// 클라이언트 세션 관리
 class Clinet{
 public:
     Clinet(string ip, int port): name(ip + ", " + to_string(port)), ip(ip), port(port), enterChatroom(-1) {}  
@@ -105,8 +66,6 @@ private:
     int enterChatroom;
 };
 
-map<int, Clinet*> clinetSessions;
-
 
 class ClientSession {
 public:
@@ -123,22 +82,31 @@ public:
         clinetSessions.erase(sock);
     }
 
-    Clinet* getClientSession(int sock){
+    Clinet* findClientSession(int sock){
         return clinetSessions[sock];
     }
 
     bool isSessionExists(int sock){
-    if(clinetSessions.find(sock) == clinetSessions.end()){
-        cerr << "Not Found Client Session: " << sock << endl;
-        throw runtime_error("세션 없음");
+        if(clinetSessions.find(sock) == clinetSessions.end()){
+            cerr << "Not Found Client Session: " << sock << endl;
+            throw runtime_error("세션 없음");
+        }
     }
-}
 
+    map<int, Clinet*> getClientSessions(){
+        return clinetSessions;
+    }
 
 private:
     ClientSession() {}
+
     map<int, Clinet*> clinetSessions;
 };
+
+
+//////////////////////////
+// ChatRoom
+/////////////////////////
 
 class Room {
 public:
@@ -165,10 +133,17 @@ public:
     }
 
     json toJson() const {
+        vector<json> memberList;
+        for (int memberId : members) {
+            Clinet* member = clientSession.findClientSession(memberId);
+            if (member) {
+                memberList.push_back(member->getName());
+            }
+        }
         return nlohmann::json{
             {"roomId", to_string(getRoomId())},
             {"title", getTitle()},
-            {"members", vector<string>()}
+            {"members", memberList}
         };
     }
 
@@ -176,6 +151,7 @@ private:
     int roomId;
     string title;
     unordered_set<int> members;
+    ClientSession& clientSession = ClientSession::getInstance();
 };
 
 class ChatRoomManager {
@@ -240,234 +216,272 @@ private:
 };
 
 
-void checkSession(int sock){
-    if(clinetSessions.find(sock) == clinetSessions.end()){
-        cerr << "Not Found Client Session: " << sock << endl;
-        throw runtime_error("세션 없음");
+//////////////////////////
+// handler
+/////////////////////////
+
+class EventHandler{
+public:
+    EventHandler() {
+
+        // 이벤트 헨틀러 등록 (this method help by GPT)
+        messageHandler = {
+            {"CSName", [this](int sock, string& message) { handleMessageCSName(sock, message); }},
+            {"CSRooms", [this](int sock, string& message) { handleMessageCSRooms(sock, message); }},
+            {"CSCreateRoom", [this](int sock, string& message) { handleMessageCSCreateRoom(sock, message); }},
+            {"CSJoinRoom", [this](int sock, string& message) { handleMessageCSJoinRoom(sock, message); }},
+            {"CSLeaveRoom", [this](int sock, string& message) { handleMessageCSLeaveRoom(sock, message); }},
+            {"CSChat", [this](int sock, string& message) { handleMessageCSChat(sock, message); }},
+            {"CSShutdown", [this](int sock, string& message) { handleMessageCSShutdown(sock, message); }}
+        };
     }
-}
 
-//////////////////////////
-// Message
-/////////////////////////
+    void handleMessage(int clinetSock, string& message) {
+        json jsonData = json::parse(message);
+        string messageType = jsonData["type"];
 
-void sendSystemMessage(int sock, string& message){
-    json data = {
-        { "type" , "SCSystemMessage"},
-        { "text", message }
-    };
-    string msg = data.dump();
-    sendMessage(sock , msg);
-}
-
-void sendChat(int sock, string& message){
-    json data = {
-        { "type" , "SCSystemMessage"},
-        { "text", message }
-    };
-    string msg = data.dump();
-    sendMessage(sock , msg);
-}
-
-void sendRoomInfomation(int sock, ChatRoomManager& roomInfo){
-    json data = {
-        { "type" , "SCRoomsResult"},
-        { "text", roomInfo.toJson() }
-    };
-    string msg = data.dump();
-    sendMessage(sock , msg);
-}
+        if (messageHandler.find(messageType) != messageHandler.end()) {
+            messageHandler[messageType](clinetSock, message);
+        } else {
+            cerr << "No handler found for message type: " << messageType << endl;
+        }
+    }
 
 
 
-//////////////////////////
-// handleer
-/////////////////////////
+    // 클라이언트 이름 변경
+    void handleMessageCSName(int sock, string& message){
+        json data = json::parse(message);
+        string name = data["name"];
 
-
-// 클라이언트 이름 변경
-void handleMessageCSName(int sock, string& message){
-    checkSession(sock);
-    json data = json::parse(message);
-    string name = data["name"];
-    Clinet* clinet = clinetSessions[sock];
-    clinet->setName(name);
-    
-    // todo: System Message
-    string systemMessage = "이름이 " +  name + " 으로 변경되었습니다.";
-
-    if(clinet->getEnterChatroom() < 0){
+        Clinet* clinet = clientSession.findClientSession(sock);
+        int roomId = clinet->getEnterChatroom();
+        clinet->setName(name);
+            
+        string systemMessage = "이름이 " +  name + " 으로 변경되었습니다.";
         sendSystemMessage(sock , systemMessage);
-    }else{
-        // 채팅 방에 들어간 경우
-        // todo : 같은 채팅방에 들어간 클라이언트 객체들에게 전부 전송
-    }
-
-}
-
-// 방 개설 목록 반환
-void handleMessageCSRooms(int sock, string& message){
-    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
-    sendRoomInfomation(sock, chatRoomManager);
-}
-
-// 새로운 방을 만드는 이벤트
-void handleMessageCSCreateRoom(int sock, string& message){
-    json data = json::parse(message);
-    string title = data["title"];
-    
-    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
-    Room chatRoom = chatRoomManager.createChatRoom(title);
-    chatRoom.joinChatRoom(sock);
-    Clinet* clinet = clinetSessions[sock];
-    clinet->setEnterChatroom(chatRoom.getRoomId());
-    
-    string systemMessage = "방제[" + title + "] 방에 입장했습니다.";
-    sendSystemMessage(sock, systemMessage);
-}
-
-void handleMessageCSJoinRoom(int sock, string& message){
-    Clinet* clinet = clinetSessions[sock];
-
-    if(clinet->getEnterChatroom() >= 0){
-        string systemMessage = "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
-        sendSystemMessage(sock, systemMessage);
-        return;
-    }
-
-
-    json data = json::parse(message);
-    int roomId = data["roomId"];
-    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
-    if(!chatRoomManager.isChatRoomExists(roomId)){
-        string systemMessage = "대화방이 존재하지 않습니다.";
-        sendSystemMessage(sock, systemMessage);
-        return;
-    }
-
-    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
-    chatRoomManager.joinChatRoom(roomId, sock);
-    
-    // todo : 방에 성공적으로 입장함
-    string systemMessage = "방제[" + chatRoom->getTitle() + "] 방에 입장했습니다.";
-    sendSystemMessage(sock, systemMessage);
-    clinet->setEnterChatroom(chatRoom->getRoomId());
-
-    systemMessage = "[" + clinet->getName() + "] 님이 입장했습니다.";
-    sendSystemMessage(sock, systemMessage);
-    for(int clinetSock : chatRoom->getMembers()){
-        if(clinetSock != sock){
-            sendMessage(clinetSock, systemMessage);
+        if(roomId >= 0){
+            notifyRoomMembers(roomId, sock, systemMessage);
         }
     }
 
-}
-
-void handleMessageCSLeaveRoom(int sock, string& message){
-    Clinet* clinet = clinetSessions[sock];
-    int roomId = clinet->getEnterChatroom();
-    if(roomId < 0){
-        string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
-        sendSystemMessage(sock, systemMessage);
-        return;
+    // 채팅방 목록 전송
+    void handleMessageCSRooms(int sock, string& message){
+        sendRoomInfomation(sock, chatRoomManager);
     }
-    
-    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
-    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
-    chatRoomManager.joinChatRoom(roomId, sock);
-    clinet->setEnterChatroom(-1);
 
-    string systemMessage = "방제[" + chatRoom->getTitle() + "] 대화 방에서 퇴장했습니다.";
-    sendSystemMessage(sock, systemMessage);
-    
-    systemMessage = "[" + clinet->getName() + "] 님이 퇴장했습니다.";
-
-    for(int clinetSock : chatRoom->getMembers()){
+    // 새로운 방 생성
+    void handleMessageCSCreateRoom(int sock, string& message){
+        json data = json::parse(message);
+        string title = data["title"];
         
-        if(clinetSock != sock){
-            sendSystemMessage(sock, systemMessage);
-        }
-    }
-}
-
-void handleMessageCSChat(int sock, string& message){
-
-    // todo : 채팅방에 들어가 있는지 확인
-    Clinet* clinet = clinetSessions[sock];
-    int roomId = clinet->getEnterChatroom();
-    if(roomId < 0){
-        //이미 클라이언트가 방에 입장한 상태임
-        string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
+        Room chatRoom = chatRoomManager.createChatRoom(title);
+        Clinet* clinet = clientSession.findClientSession(sock);
+        int roomId = chatRoom.getRoomId();
+        
+        chatRoomManager.joinChatRoom(roomId, sock);
+        clinet->setEnterChatroom(roomId);
+        
+        string systemMessage = "방제[" + title + "] 방에 입장했습니다.";
         sendSystemMessage(sock, systemMessage);
-        return;
     }
-    
-    json data = json::parse(message);
-    string text = data["text"];
 
-    // 들어가 있다면 채팅처리
-    ChatRoomManager chatRoomManager = ChatRoomManager::getInstance();
-    Room* chatRoom = chatRoomManager.getChatRoom(roomId);
-    
-    string chatText = "(" + clinet->getName() + "): " + text;
-    for(int clinetSock : chatRoom->getMembers()){
-        if(clinetSock != sock){
-            sendChat(clinetSock, chatText);
+    // 채팅방 참가
+    void handleMessageCSJoinRoom(int sock, string& message){
+        json data = json::parse(message);
+        int roomId = data["roomId"];
+        Clinet* clinet = clientSession.findClientSession(sock);
+        Room* chatRoom = chatRoomManager.getChatRoom(roomId);
+
+        if(clinet->getEnterChatroom() >= 0){
+            string systemMessage = "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
+            sendSystemMessage(sock, systemMessage);
+            return;
+        }
+        if(!chatRoomManager.isChatRoomExists(roomId)){
+            string systemMessage = "대화방이 존재하지 않습니다.";
+            sendSystemMessage(sock, systemMessage);
+            return;
+        }
+
+        chatRoomManager.joinChatRoom(roomId, sock);
+        clinet->setEnterChatroom(chatRoom->getRoomId());
+
+        string systemMessage = "방제[" + chatRoom->getTitle() + "] 방에 입장했습니다.";
+        sendSystemMessage(sock, systemMessage);
+        
+        systemMessage = "[" + clinet->getName() + "] 님이 입장했습니다.";
+        notifyRoomMembers(roomId, sock, systemMessage);
+
+    }
+
+    // 방 나가기
+    void handleMessageCSLeaveRoom(int sock, string& message){
+        Clinet* clinet = clientSession.findClientSession(sock);
+        int roomId = clinet->getEnterChatroom();
+        Room* chatRoom = chatRoomManager.getChatRoom(roomId);
+
+        if(roomId < 0){
+            string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
+            sendSystemMessage(sock, systemMessage);
+            return;
+        }
+        
+        chatRoomManager.joinChatRoom(roomId, sock);
+        clinet->setEnterChatroom(-1);
+
+        string systemMessage = "방제[" + chatRoom->getTitle() + "] 대화 방에서 퇴장했습니다.";
+        sendSystemMessage(sock, systemMessage);
+        
+        systemMessage = "[" + clinet->getName() + "] 님이 퇴장했습니다.";
+        notifyRoomMembers(roomId, sock, systemMessage);
+    }
+
+    // 채팅
+    void handleMessageCSChat(int sock, string& message){
+        json data = json::parse(message);
+        string text = data["text"];
+
+        Clinet* clinet = clientSession.findClientSession(sock);
+        int roomId = clinet->getEnterChatroom();
+        Room* chatRoom = chatRoomManager.getChatRoom(roomId);
+
+        if(roomId < 0){
+            string systemMessage = "현재 대화방에 들어가 있지 않습니다.";
+            sendSystemMessage(sock, systemMessage);
+            return;
+        }
+        
+        for(int clinetSock : chatRoom->getMembers()){
+            if(clinetSock != sock){
+                sendChat(clinetSock, clinet->getName(), text);
+            }
         }
     }
-}
 
-void handleMessageCSShutdown(int sock, string& message){
-    cout << "Shutdown" << endl;
-    runServer.store(false);
-}
+    // 방에 있는 모든 사용자에게 시스템 메시지 전송
+    void notifyRoomMembers(int roomId, int senderSock, string message) {
+        ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+        Room* room = chatRoomManager.getChatRoom(roomId);
+        for (int memberSock : room->getMembers()) {
+            if (memberSock != senderSock) {
+                sendSystemMessage(memberSock, message);
+            }
+        }
+    }
 
+    // 서버 종료
+    void handleMessageCSShutdown(int sock, string& message){
+        cout << "Shutdown" << endl;
+        runServer.store(false);
+    }
 
-/*
-클라이언트->서버가 전송하는 메시지 타입
-CSName
-CSRooms
-CSCreateRoom = { title }
-CSJoinRoom = { roomId }
-CSChat = { text }
-CSLeaveRoom
-CSShutdown
-*/
+private:
+    unordered_map<string, function<void(int, string&)>> messageHandler;
 
+    ChatRoomManager& chatRoomManager = ChatRoomManager::getInstance();
+    ClientSession& clientSession = ClientSession::getInstance();
 
-/*
-서버->클라이언트 가 전송하는 타입
-SCRoomsResult = { }
-SCChat
-SCSystemMessage
-*/
+    void sendSystemMessage(int sock, string& message){
+        json data = {
+            { "type" , "SCSystemMessage"},
+            { "text", message }
+        };
+        string msg = data.dump();
+        sendMessage(sock , msg);
+    }
 
-unordered_map<string, function<void(int, string&)>> messageHandler = {
-    {"CSName", handleMessageCSName},
-    {"CSRooms", handleMessageCSRooms},
-    {"CSCreateRoom", handleMessageCSCreateRoom},
-    {"CSJoinRoom", handleMessageCSJoinRoom},
-    {"CSLeaveRoom", handleMessageCSLeaveRoom},
-    {"CSChat", handleMessageCSChat},
-    {"CSShutdown", handleMessageCSShutdown},
+    void sendChat(int sock, string member , string& message){
+        json data = {
+            { "type" , "SCChat"},
+            { "member", member },
+            { "text", message }
+        };
+        string msg = data.dump();
+        sendMessage(sock , msg);
+    }
+
+    void sendRoomInfomation(int sock, ChatRoomManager& roomInfo){
+        json data = {
+            { "type" , "SCRoomsResult"},
+            { "rooms", roomInfo.toJson() }
+        };
+        string msg = data.dump();
+        sendMessage(sock , msg);
+    }
+
 };
 
+EventHandler eventHandler = EventHandler();
+ClientSession& clientSession = ClientSession::getInstance();
 
-void handleJsonMessage(int clinetSock, string& message) {
-    json jsonData = json::parse(message);
-    string messageType = jsonData["type"];
-    if (messageHandler.find(messageType) != messageHandler.end()) {
-        messageHandler[messageType](clinetSock, message);
-    } else {
-        cerr << "No handler found for message type: " << messageType << endl;
+class ConnectionClosedException : public runtime_error {
+public:
+    explicit ConnectionClosedException(const string& msg) : runtime_error(msg) {}
+};
+
+void sendMessage(int socket, string& message) { // (this method help by GPT)
+    uint16_t dataSize = htons(message.length());
+    vector<char> sendBuffer(sizeof(dataSize) + message.length());
+
+    memcpy(sendBuffer.data(), &dataSize, sizeof(dataSize));
+    memcpy(sendBuffer.data() + sizeof(dataSize), message.c_str(), message.length());
+
+    size_t totalSent = 0;
+    size_t dataLength = sendBuffer.size();
+    
+    while (totalSent < dataLength) {
+        int sentBytes = send(socket, sendBuffer.data() + totalSent, dataLength - totalSent, MSG_NOSIGNAL);
+        if (sentBytes < 0) {
+            cerr << "Send() failed: " << strerror(errno) << endl;
+            return;
+        }
+        totalSent += sentBytes;
+    }
+
+    if (verbosity <= 1) {
+        printf("Send [S->C:총길이=%d바이트] %x(메시지크기) + %s\n", dataSize, dataSize, message.c_str());
     }
 }
+
+
+string receiveMessage(int socket){
+    uint16_t recvDataSize = 0;
+    char buffer[1024]; 
+
+    cout << "Recv..";
+
+    int recvByte = recv(socket, &recvDataSize, sizeof(recvDataSize), 0);
+    if(recvByte <= 0){
+        throw ConnectionClosedException("Client connection closed or recv error");
+    }
+    recvDataSize = ntohs(recvDataSize);
+    
+    cout << recvByte << "Size = " << recvDataSize << endl;
+
+    int totalReceived = 0;
+    while (totalReceived < recvDataSize) {
+        recvByte = recv(socket, buffer + totalReceived, recvDataSize - totalReceived, 0);
+        if (recvByte <= 0) {
+            throw ConnectionClosedException("Client connection closed or recv error");
+        }
+        totalReceived += recvByte;
+    }
+    string recivedData(buffer, recvDataSize);
+
+    if(verbosity <= 1){
+        printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) + %s\n", recvDataSize, recvDataSize, recivedData.c_str());
+    }
+
+    return recivedData;
+}
+
 
 
 
 void task() {
     while (quitWorker.load() == false) {
-        int taskSock;
+        int taskSock = -1;
         {
             unique_lock<mutex> lock(taskQueueMutex);
             while (taskQueue.empty()) {
@@ -475,17 +489,48 @@ void task() {
             }
             taskSock = taskQueue.front();
             taskQueue.pop();
+            cout << "Do Work Socket:" << taskSock << endl;
         }
 
+        
         try{
             string messages = receiveMessage(taskSock);
-            handleJsonMessage(taskSock, messages);
-        } catch(const runtime_error& e){
-            cout << "연결 종료" << endl;
-            clinetSessions.erase(taskSock);
+            eventHandler.handleMessage(taskSock, messages);
+
+        } catch (const ConnectionClosedException& e) {
+            cout << "연결 종료: " << e.what() << endl;
+            string dummyMsg = "{\"type\":\"CSLeaveRoom\"}";
+            eventHandler.handleMessage(taskSock, dummyMsg);
+            clientSession.deleteClientSession(taskSock);
+        } catch (const runtime_error& e) {
+            cout << "런타임 오류 발생: " << e.what() << endl;
+        } catch (const exception& e) {
+            cout << "예외 발생: " << e.what() << endl;
+        } catch (const exception_ptr& e) {
+            cout << "포인터 문제 발생"  << endl;
         }
     }
 }
+
+class Worker{
+public:
+
+
+
+private:
+
+};
+
+
+class Reactor{  
+public:
+
+
+
+private:
+
+
+};
 
 int main() {
     quitWorker = false;
@@ -516,15 +561,13 @@ int main() {
     fd_set readFd;
     int maxFd = 0;
     
-
     cout << "Server Stared..." << endl;
-
     while (runServer.load()) {
         FD_ZERO(&readFd);
         FD_SET(serverSock, &readFd);
         maxFd = serverSock;
 
-        for (auto& client : clinetSessions) {
+        for (auto& client : clientSession.getClientSessions()) {
             int clientSock = client.first;
             FD_SET(clientSock, &readFd);
             
@@ -551,14 +594,14 @@ int main() {
                 
                 FD_SET(clientSock, &readFd);
             
-                clinetSessions.insert({clientSock, new Clinet(clientAddr, clientPort)});
+                clientSession.addClientSession(clientSock, clientAddr, clientPort);
                 
             } else {
                 cerr << "accept() failed: " << strerror(errno) << endl; 
             }
         }
 
-        for (auto& client : clinetSessions) {
+        for (auto& client : clientSession.getClientSessions()) {
             int clientSock = client.first;
             if (FD_ISSET(clientSock, &readFd)) {
                 cout << "Client " << clientSock << "와 통신 중..." << endl;
