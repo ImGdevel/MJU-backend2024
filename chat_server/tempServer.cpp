@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <nlohmann/json.hpp>
+#include <csignal>
 using json = nlohmann::json;
 
 using namespace std;
@@ -30,10 +31,76 @@ condition_variable taskCV;
 
 string msgType = "json";
 
-int verbosity = 1;
 
-void sendMessage(int socket,  string& message);
-string receiveMessage(int socket);
+class NetworkMessenger;
+
+
+class ConnectionClosedException : public runtime_error {
+public:
+    explicit ConnectionClosedException(const string& msg) : runtime_error(msg) {}
+};
+
+
+//////////////////////////
+// NetworkMessenger
+/////////////////////////
+
+class NetworkMessenger {
+public:
+    static void sendMessage(int socket, string& message) {
+        uint16_t dataSize = htons(message.length());
+        vector<char> sendBuffer(sizeof(dataSize) + message.length());
+
+        memcpy(sendBuffer.data(), &dataSize, sizeof(dataSize));
+        memcpy(sendBuffer.data() + sizeof(dataSize), message.c_str(), message.length());
+
+        size_t totalSent = 0;
+        size_t dataLength = sendBuffer.size();
+        
+        while (totalSent < dataLength) {
+            int sentBytes = send(socket, sendBuffer.data() + totalSent, dataLength - totalSent, MSG_NOSIGNAL);
+            if (sentBytes < 0) {
+                throw ConnectionClosedException("send faile");
+            }
+            totalSent += sentBytes;
+        }
+
+        printf("Send [S->C:총길이=%d바이트] %x(메시지크기) + %s\n", dataSize, dataSize, message.c_str());
+        
+    }
+
+    static string receiveMessage(int socket){
+        uint16_t recvDataSize = 0;
+        char buffer[1024]; 
+
+        cout << "Recv..";
+
+        int recvByte = recv(socket, &recvDataSize, sizeof(recvDataSize), 0);
+        if(recvByte <= 0){
+            throw ConnectionClosedException("Client connection closed or recv error");
+            return;
+        }
+        recvDataSize = ntohs(recvDataSize);
+        
+        cout << recvByte << "Size = " << recvDataSize << endl;
+
+        int totalReceived = 0;
+        while (totalReceived < recvDataSize) {
+            recvByte = recv(socket, buffer + totalReceived, recvDataSize - totalReceived, 0);
+            if (recvByte <= 0) {
+                throw ConnectionClosedException("Client connection closed or recv error");
+                return;
+            }
+            totalReceived += recvByte;
+        }
+        string recivedData(buffer, recvDataSize);
+
+        printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) + %s\n", recvDataSize, recvDataSize, recivedData.c_str());
+
+        return recivedData;
+    }
+};
+
 
 //////////////////////////
 // Clinet
@@ -79,11 +146,16 @@ public:
     }
 
     void deleteClientSession(int sock){
-        clinetSessions.erase(sock);
+        if(isSessionExists(sock)){
+            clinetSessions.erase(sock);
+        }
     }
 
     Clinet* findClientSession(int sock){
-        return clinetSessions[sock];
+        if(isSessionExists(sock)){
+            return clinetSessions[sock];
+        }
+        return nullptr;
     }
 
     bool isSessionExists(int sock){
@@ -91,6 +163,7 @@ public:
             cerr << "Not Found Client Session: " << sock << endl;
             throw runtime_error("세션 없음");
         }
+        return true;
     }
 
     map<int, Clinet*> getClientSessions(){
@@ -237,13 +310,18 @@ public:
     }
 
     void handleMessage(int clinetSock, string& message) {
-        json jsonData = json::parse(message);
-        string messageType = jsonData["type"];
 
-        if (messageHandler.find(messageType) != messageHandler.end()) {
-            messageHandler[messageType](clinetSock, message);
-        } else {
-            cerr << "No handler found for message type: " << messageType << endl;
+        try{
+            json jsonData = json::parse(message);
+            string messageType = jsonData["type"];
+
+            if (messageHandler.find(messageType) != messageHandler.end()) {
+                messageHandler[messageType](clinetSock, message);
+            } else {
+                cerr << "No handler found for message type: " << messageType << endl;
+            }
+        } catch (const json::exception& e) {
+            cerr << "JSON parsing error: " << e.what() << endl;
         }
     }
 
@@ -388,7 +466,7 @@ private:
             { "text", message }
         };
         string msg = data.dump();
-        sendMessage(sock , msg);
+        NetworkMessenger::sendMessage(sock , msg);
     }
 
     void sendChat(int sock, string member , string& message){
@@ -398,7 +476,7 @@ private:
             { "text", message }
         };
         string msg = data.dump();
-        sendMessage(sock , msg);
+        NetworkMessenger::sendMessage(sock , msg);
     }
 
     void sendRoomInfomation(int sock, ChatRoomManager& roomInfo){
@@ -407,7 +485,7 @@ private:
             { "rooms", roomInfo.toJson() }
         };
         string msg = data.dump();
-        sendMessage(sock , msg);
+        NetworkMessenger::sendMessage(sock , msg);
     }
 
 };
@@ -415,203 +493,179 @@ private:
 EventHandler eventHandler = EventHandler();
 ClientSession& clientSession = ClientSession::getInstance();
 
-class ConnectionClosedException : public runtime_error {
+//////////////////////////
+// NetworkMessenger
+/////////////////////////
+
+
+
+
+// Worker Class
+class Worker {
 public:
-    explicit ConnectionClosedException(const string& msg) : runtime_error(msg) {}
-};
-
-void sendMessage(int socket, string& message) { // (this method help by GPT)
-    uint16_t dataSize = htons(message.length());
-    vector<char> sendBuffer(sizeof(dataSize) + message.length());
-
-    memcpy(sendBuffer.data(), &dataSize, sizeof(dataSize));
-    memcpy(sendBuffer.data() + sizeof(dataSize), message.c_str(), message.length());
-
-    size_t totalSent = 0;
-    size_t dataLength = sendBuffer.size();
-    
-    while (totalSent < dataLength) {
-        int sentBytes = send(socket, sendBuffer.data() + totalSent, dataLength - totalSent, MSG_NOSIGNAL);
-        if (sentBytes < 0) {
-            cerr << "Send() failed: " << strerror(errno) << endl;
-            return;
-        }
-        totalSent += sentBytes;
-    }
-
-    if (verbosity <= 1) {
-        printf("Send [S->C:총길이=%d바이트] %x(메시지크기) + %s\n", dataSize, dataSize, message.c_str());
-    }
-}
-
-
-string receiveMessage(int socket){
-    uint16_t recvDataSize = 0;
-    char buffer[1024]; 
-
-    cout << "Recv..";
-
-    int recvByte = recv(socket, &recvDataSize, sizeof(recvDataSize), 0);
-    if(recvByte <= 0){
-        throw ConnectionClosedException("Client connection closed or recv error");
-    }
-    recvDataSize = ntohs(recvDataSize);
-    
-    cout << recvByte << "Size = " << recvDataSize << endl;
-
-    int totalReceived = 0;
-    while (totalReceived < recvDataSize) {
-        recvByte = recv(socket, buffer + totalReceived, recvDataSize - totalReceived, 0);
-        if (recvByte <= 0) {
-            throw ConnectionClosedException("Client connection closed or recv error");
-        }
-        totalReceived += recvByte;
-    }
-    string recivedData(buffer, recvDataSize);
-
-    if(verbosity <= 1){
-        printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) + %s\n", recvDataSize, recvDataSize, recivedData.c_str());
-    }
-
-    return recivedData;
-}
-
-
-
-
-void task() {
-    while (quitWorker.load() == false) {
-        int taskSock = -1;
-        {
-            unique_lock<mutex> lock(taskQueueMutex);
-            while (taskQueue.empty()) {
-                taskCV.wait(lock);
+    static void task() {
+        while (quitWorker.load() == false) {
+            int taskSock = -1;
+            {
+                unique_lock<mutex> lock(taskQueueMutex);
+                while (taskQueue.empty()) {
+                    taskCV.wait(lock);
+                }
+                taskSock = taskQueue.front();
+                taskQueue.pop();
+                cout << "Do Work Socket:" << taskSock << endl;
             }
-            taskSock = taskQueue.front();
-            taskQueue.pop();
-            cout << "Do Work Socket:" << taskSock << endl;
-        }
 
-        
-        try{
-            string messages = receiveMessage(taskSock);
-            eventHandler.handleMessage(taskSock, messages);
+            try{
+                string messages = NetworkMessenger::receiveMessage(taskSock);
+                eventHandler.handleMessage(taskSock, messages);
 
-        } catch (const ConnectionClosedException& e) {
-            cout << "연결 종료: " << e.what() << endl;
-            string dummyMsg = "{\"type\":\"CSLeaveRoom\"}";
-            eventHandler.handleMessage(taskSock, dummyMsg);
-            clientSession.deleteClientSession(taskSock);
-        } catch (const runtime_error& e) {
-            cout << "런타임 오류 발생: " << e.what() << endl;
-        } catch (const exception& e) {
-            cout << "예외 발생: " << e.what() << endl;
-        } catch (const exception_ptr& e) {
-            cout << "포인터 문제 발생"  << endl;
+            } catch (const ConnectionClosedException& e) {
+                cout << "연결 종료: " << e.what() << endl;
+                string dummyMsg = "{\"type\":\"CSLeaveRoom\"}";
+                eventHandler.handleMessage(taskSock, dummyMsg);
+                clientSession.deleteClientSession(taskSock);
+                close(taskSock);
+            } catch (const runtime_error& e) {
+                cout << "런타임 오류 발생: " << e.what() << endl;
+            } catch (const exception& e) {
+                cout << "예외 발생: " << e.what() << endl;
+            } catch (const exception_ptr& e) {
+                cout << "포인터 문제 발생"  << endl;
+            }
         }
     }
-}
-
-class Worker{
-public:
-
-
-
-private:
-
 };
+
+
 
 
 class Reactor{  
 public:
 
-
-
-private:
-
-
-};
-
-int main() {
-    quitWorker = false;
-
-    for (int i = 0; i < THREAD_COUNT; i++) {
-        workerPool.emplace_back(task);
-    }
-
-    int serverSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (serverSock < 0) {
-        throw runtime_error(string("socket failed: ") + strerror(errno));
-    }
-
-    struct sockaddr_in sin;
-    memset(&sin, 0, sizeof(sin));
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(PORT);
-    sin.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(serverSock, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-        throw runtime_error(string("bind failed: ") + strerror(errno));
-    }
-
-    if (listen(serverSock, 10) < 0) {
-        throw runtime_error(string("listen failed: ") + strerror(errno));
-    }
-
-    fd_set readFd;
-    int maxFd = 0;
-    
-    cout << "Server Stared..." << endl;
-    while (runServer.load()) {
-        FD_ZERO(&readFd);
-        FD_SET(serverSock, &readFd);
-        maxFd = serverSock;
-
-        for (auto& client : clientSession.getClientSessions()) {
-            int clientSock = client.first;
-            FD_SET(clientSock, &readFd);
-            
-            if (clientSock > maxFd) maxFd = clientSock;
-        }
-        int numReady = select(maxFd + 1, &readFd, NULL, NULL, NULL);
-        if (numReady < 0) {
-            cerr << "select() failed: " << strerror(errno) << endl;
-            continue;
+    Reactor(){
+        serverSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (serverSock < 0) {
+            throw runtime_error(string("socket failed: ") + strerror(errno));
         }
 
-        if (FD_ISSET(serverSock, &readFd)) {
-            struct sockaddr_in clientSin;
-            socklen_t clientSinSize = sizeof(clientSin);
-            memset(&clientSin, 0, sizeof(clientSin));
-            int clientSock = accept(serverSock, (struct sockaddr*)&clientSin, &clientSinSize);
+        struct sockaddr_in sin;
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(PORT);
+        sin.sin_addr.s_addr = INADDR_ANY;
 
-            if (clientSock >= 0) {
-                string clientAddr = inet_ntoa(clientSin.sin_addr);
-                int clientPort = ntohs(clientSin.sin_port);
-                cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientPort << "\n";
-                
-                if(clientSock < maxFd) maxFd = clientSock;
-                
+        if (bind(serverSock, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+            throw runtime_error(string("bind failed: ") + strerror(errno));
+        }
+
+        if (listen(serverSock, 10) < 0) {
+            throw runtime_error(string("listen failed: ") + strerror(errno));
+        }
+    }
+
+    ~Reactor(){
+        cout << "서버 소캣 종료" << endl;
+        close(serverSock);
+    }
+
+    void start(){
+        fd_set readFd;
+        int maxFd = 0;
+        cout << "Server Stared..." << endl;
+        while (runServer.load()) {
+            FD_ZERO(&readFd);
+            FD_SET(serverSock, &readFd);
+            maxFd = serverSock;
+
+            for (auto& client : clientSession.getClientSessions()) {
+                int clientSock = client.first;
                 FD_SET(clientSock, &readFd);
-            
-                clientSession.addClientSession(clientSock, clientAddr, clientPort);
                 
-            } else {
-                cerr << "accept() failed: " << strerror(errno) << endl; 
+                if (clientSock > maxFd) maxFd = clientSock;
             }
-        }
+            int numReady = select(maxFd + 1, &readFd, NULL, NULL, NULL);
+            if (numReady < 0) {
+                cerr << "select() failed: " << strerror(errno) << endl;
+                continue;
+            }
 
-        for (auto& client : clientSession.getClientSessions()) {
-            int clientSock = client.first;
-            if (FD_ISSET(clientSock, &readFd)) {
-                cout << "Client " << clientSock << "와 통신 중..." << endl;
-                {
-                    unique_lock<mutex> lock(taskQueueMutex);
-                    taskQueue.push(clientSock);
-                    taskCV.notify_one();
+            if (FD_ISSET(serverSock, &readFd)) {
+                struct sockaddr_in clientSin;
+                socklen_t clientSinSize = sizeof(clientSin);
+                memset(&clientSin, 0, sizeof(clientSin));
+                int clientSock = accept(serverSock, (struct sockaddr*)&clientSin, &clientSinSize);
+
+                if (clientSock >= 0) {
+                    string clientAddr = inet_ntoa(clientSin.sin_addr);
+                    int clientPort = ntohs(clientSin.sin_port);
+                    cout << "Client Connect: Ip_" << clientAddr << " Port_" << clientPort << "\n";
+                    
+                    if(clientSock < maxFd) maxFd = clientSock;
+                    
+                    FD_SET(clientSock, &readFd);
+                
+                    clientSession.addClientSession(clientSock, clientAddr, clientPort);
+                    
+                } else {
+                    cerr << "accept() failed: " << strerror(errno) << endl; 
+                }
+            }
+
+            for (auto& client : clientSession.getClientSessions()) {
+                int clientSock = client.first;
+                if (FD_ISSET(clientSock, &readFd)) {
+                    //cout << "Client " << clientSock << "와 통신 중..." << endl;
+                    {
+                        unique_lock<mutex> lock(taskQueueMutex);
+                        taskQueue.push(clientSock);
+                        taskCV.notify_one();
+                    }
                 }
             }
         }
+    }
+
+private:
+    int serverSock;
+
+};
+
+
+void signalHandler(int signum) {
+    std::cout << "Interrupt signal (" << signum << ") received.\n";
+    quitWorker.store(true);
+    taskCV.notify_all();
+    for (auto& t : workerPool) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+    exit(signum); 
+}
+
+int main() {
+    signal(SIGINT, signalHandler);
+
+    try{
+        quitWorker.store(false);
+        
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            workerPool.emplace_back(Worker::task);
+        }
+
+        Reactor* reactor = new Reactor();
+        reactor->start();
+
+        delete reactor;
+    } catch (const runtime_error& e) {
+        cout << "런타임 오류 발생: " << e.what() << endl;
+        return 1;
+    } catch (const exception& e) {
+        cout << "예외 발생: " << e.what() << endl;
+        return 1;
+    } catch (const exception_ptr& e) {
+        cout << "포인터 문제 발생"  << endl;
     }
 
     quitWorker.store(true);
@@ -622,6 +676,5 @@ int main() {
         }
     }
 
-    close(serverSock);
     return 0;
 }
