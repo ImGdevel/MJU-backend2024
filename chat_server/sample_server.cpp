@@ -20,9 +20,12 @@ using json = nlohmann::json;
 #define PORT 10114
 #define MAX_CLIENTS 5
 
-mutex queueMutex;
+mutex queueMutex, processingMutex;
 condition_variable cv;
 queue<int> clientQueue;
+
+map<int, string> clientSessions; 
+set<int> processingSockets;
 
 void send_message(int client_socket, const string& serialized_data) {
     uint16_t msg_length = htons(serialized_data.size());
@@ -54,17 +57,22 @@ string receive_message(int client_socket) {
         }
         return "";
     }
-
+    
     uint16_t msg_length;
     memcpy(&msg_length, length_buffer, sizeof(msg_length));
     msg_length = ntohs(msg_length);
 
     string serialized_data(msg_length, 0);
+
     ssize_t data_received = recv(client_socket, &serialized_data[0], msg_length, MSG_WAITALL);
 
-    if (data_received != msg_length) {
-        perror("Failed to receive message data");
-        return "";
+    while (data_received < msg_length) {
+        ssize_t more_data = recv(client_socket, &serialized_data[data_received], msg_length - data_received, 0);
+        if (more_data <= 0) {
+            perror("Failed to receive complete message data");
+            return "";
+        }
+        data_received += more_data;
     }
 
     cout << "[C->S: Message received] Length: " << serialized_data.size() << " bytes, Data: " << serialized_data << endl;
@@ -73,71 +81,65 @@ string receive_message(int client_socket) {
 
 void handleClient(int client_socket) {
     bool use_json = true;
-    bool running = true;
+    if (use_json) {
+        string serialized_data = receive_message(client_socket);
 
-    while (running) {
+        if (serialized_data.empty()) return;
 
-
-        if (use_json) {
-
-            string serialized_data = receive_message(client_socket);
-            if (serialized_data.empty()) break;
-
-            try {
-                json json_message = json::parse(serialized_data);
-                cout << "[C->S: JSON Message received] Data: " << json_message.dump(4) << endl;
-            } catch (const json::parse_error& e) {
-                cerr << "JSON parse error: " << e.what() << endl;
-            }
-        } else {
-            string serialized_data_type = receive_message(client_socket);
-            if (serialized_data_type.empty()) break;
-
-            string serialized_data_message = receive_message(client_socket);
-            if (serialized_data_message.empty()) break;
-
-            Type incoming_type_msg;
-            if (!incoming_type_msg.ParseFromString(serialized_data_type)) {
-                cerr << "Protobuf parse error" << endl;
-            } else {
-                
-                switch (incoming_type_msg.type()) {
-                    case Type::CS_NAME:
-                        cout << "Handling CS_NAME message in Protobuf" << endl;
-                        break;
-                    case Type::CS_CHAT:
-                        cout << "Handling CS_CHAT message in Protobuf" << endl;
-                        break;
-                    case Type::CS_SHUTDOWN:
-                        cout << "Handling CS_SHUTDOWN message in Protobuf" << endl;
-                        running = false;
-                        break;
-                    default:
-                        cerr << "Unknown message type received" << endl;
-                        break;
-                }
-
-                cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
-
-            }
+        try {
+            json json_message = json::parse(serialized_data);
+            cout << "[C->S: JSON Message received] Data: " << json_message.dump(4) << endl;
+        } catch (const json::parse_error& e) {
+            cerr << "JSON parse error: " << e.what() << endl;
         }
+    } else {
+        string serialized_data_type = receive_message(client_socket);
+        if (serialized_data_type.empty()) return;
 
-        if (use_json) {
-            json json_message = {{"type", "SCSystemMessage"}, {"text", "MESSAGE"}};
-            send_message(client_socket, json_message.dump());
+        string serialized_data_message = receive_message(client_socket);
+        if (serialized_data_message.empty()) return;
+
+        Type incoming_type_msg;
+        if (!incoming_type_msg.ParseFromString(serialized_data_type)) {
+            cerr << "Protobuf parse error" << endl;
         } else {
-            Type response_type_msg;
-            response_type_msg.set_type(Type::SC_SYSTEM_MESSAGE);
-            send_message(client_socket, response_type_msg.SerializeAsString());
-
-            SCSystemMessage response_msg;
-            response_msg.set_text("Response from server");
-            send_message(client_socket, response_msg.SerializeAsString());
+            
+            switch (incoming_type_msg.type()) {
+                case Type::CS_NAME:
+                    cout << "Handling CS_NAME message in Protobuf" << endl;
+                    break;
+                case Type::CS_CHAT:
+                    cout << "Handling CS_CHAT message in Protobuf" << endl;
+                    break;
+                case Type::CS_SHUTDOWN:
+                    cout << "Handling CS_SHUTDOWN message in Protobuf" << endl;
+                    break;
+                default:
+                    cerr << "Unknown message type received" << endl;
+                    break;
+            }
+            cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
         }
     }
 
-    close(client_socket);
-    cout << "Client disconnected" << endl;
+    if (use_json) {
+        json json_message = {{"type", "SCSystemMessage"}, {"text", "MESSAGE"}};
+        send_message(client_socket, json_message.dump());
+    } else {
+        Type response_type_msg;
+        response_type_msg.set_type(Type::SC_SYSTEM_MESSAGE);
+        send_message(client_socket, response_type_msg.SerializeAsString());
+
+        SCSystemMessage response_msg;
+        response_msg.set_text("Response from server");
+        send_message(client_socket, response_msg.SerializeAsString());
+    }
+
+    
+    {
+        lock_guard<mutex> lock(processingMutex);
+        processingSockets.erase(client_socket);
+    }
 }
 
 void worker() {
@@ -145,7 +147,9 @@ void worker() {
         int clientSocket;
         {
             unique_lock<mutex> lock(queueMutex);
-            cv.wait(lock, [] { return !clientQueue.empty(); });
+            while (clientQueue.empty()) {
+                cv.wait(lock);
+            }
             clientSocket = clientQueue.front();
             clientQueue.pop();
         }
@@ -186,7 +190,7 @@ int main() {
     cout << "Server listening on port " << PORT << endl;
 
     vector<thread> workers;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 1; ++i) {
         workers.emplace_back(worker);
     }
 
@@ -197,22 +201,38 @@ int main() {
         FD_SET(server_fd, &readfds);
         int max_sd = server_fd;
 
+        // 기존 클라이언트 소켓들을 FD_SET에 추가
+        for (auto& [sock, _] : clientSessions) {
+            FD_SET(sock, &readfds);
+            max_sd = max(max_sd, sock);
+        }
         int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
-        if (activity < 0 && errno != EINTR) {
+        if (activity < 0) {
             perror("select error");
         }
 
+        // 새로운 클라이언트 요청 처리
         if (FD_ISSET(server_fd, &readfds)) {
             if ((new_socket = accept(server_fd, (sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
+            clientSessions[new_socket] = "";
+            cout << "New client connected, socket: " << new_socket << endl;
+        }
 
-            {
-                lock_guard<mutex> lock(queueMutex);
-                clientQueue.push(new_socket);
+        for(auto& [client_socket, _] : clientSessions){
+            if (FD_ISSET(client_socket, &readfds)  ) {
+                lock_guard<mutex> lock(processingMutex);
+                if (processingSockets.find(client_socket) == processingSockets.end()) {
+                    processingSockets.insert(client_socket);
+                    {
+                        unique_lock<mutex> lock(queueMutex);
+                        clientQueue.push(client_socket);
+                    }
+                    cv.notify_one();
+                }
             }
-            cv.notify_one();
         }
     }
 
