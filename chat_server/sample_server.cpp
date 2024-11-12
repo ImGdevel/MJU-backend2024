@@ -10,22 +10,84 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <sys/select.h>
-#include <nlohmann/json.hpp>  // JSON 라이브러리
-#include "message.pb.h"       // Protobuf 메시지 정의 헤더
+#include <nlohmann/json.hpp>
+#include "message.pb.h"  
+#include <signal.h>
+#include <unordered_set>
 
 using namespace mju;
 using namespace std;
 using json = nlohmann::json;
 
-#define PORT 10114
 #define MAX_CLIENTS 5
 
+#define JSON 1
+#define PROTOBUF 0
+
+class Clinet;
+class Room;
+
+atomic<bool> isRunning(true);
+
 mutex queueMutex, processingMutex;
+mutex userMutex, roomMutex;
 condition_variable cv;
 queue<int> clientQueue;
 
-map<int, string> clientSessions; 
-set<int> processingSockets;
+unordered_map<int, Clinet> clientSessions; 
+unordered_set<int> processingSockets;
+
+unordered_map<int, Room> chatRooms;
+
+static int WORKER = 4;
+static int FORMAT = JSON; 
+static int PORT = 10114;
+
+
+class Clinet{
+public:
+    Clinet(){
+        cout << "불리면 안됨";
+    }
+
+    Clinet(const string& name){
+        this->name = name;
+        enterRoom = 0;
+    }
+
+    Clinet(const Clinet& other) {
+        this->name = other.name;
+        this->enterRoom = other.enterRoom;  
+    }
+    string name;
+    int enterRoom;
+};
+
+class Room{
+public:
+    int id;
+    string title;
+    unordered_set<int> joinedUser;
+};
+
+
+
+
+
+void serverSutDownHandler(int sig) {
+    isRunning.store(false);
+    cv.notify_all();
+}
+
+// 연결 종료한 클라이언트
+void disconnectedClinet(int sock){
+    {
+        unique_lock<mutex> lock(queueMutex);
+        clientSessions.erase(sock);
+    }
+    close(sock);
+}
+
 
 void send_message(int client_socket, const string& serialized_data) {
     uint16_t msg_length = htons(serialized_data.size());
@@ -42,7 +104,8 @@ void send_message(int client_socket, const string& serialized_data) {
         return;
     }
 
-    cout << "[S->C: Message sent] Length: " << serialized_data.size() << " bytes, Data: " << serialized_data << endl;
+    printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msg_length, msg_length, serialized_data.c_str());
+
 }
 
 string receive_message(int client_socket) {
@@ -52,21 +115,28 @@ string receive_message(int client_socket) {
     if (length_received != sizeof(length_buffer)) {
         if (length_received == 0) {
             cerr << "Client disconnected" << endl;
+            disconnectedClinet(client_socket);
+            return "";
         } else {
             perror("Failed to receive message length");
         }
         return "";
     }
-    
+
+
     uint16_t msg_length;
     memcpy(&msg_length, length_buffer, sizeof(msg_length));
     msg_length = ntohs(msg_length);
-
     string serialized_data(msg_length, 0);
+
+    if(msg_length == 0){
+        cout << "메시지 없음" << endl;
+        return "";
+    }
 
     ssize_t data_received = recv(client_socket, &serialized_data[0], msg_length, MSG_WAITALL);
 
-    while (data_received < msg_length) {
+    while (data_received < msg_length && isRunning.load()) {
         ssize_t more_data = recv(client_socket, &serialized_data[data_received], msg_length - data_received, 0);
         if (more_data <= 0) {
             perror("Failed to receive complete message data");
@@ -75,54 +145,272 @@ string receive_message(int client_socket) {
         data_received += more_data;
     }
 
-    cout << "[C->S: Message received] Length: " << serialized_data.size() << " bytes, Data: " << serialized_data << endl;
+    printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msg_length, msg_length, serialized_data.c_str());
     return serialized_data;
 }
 
-void handleClient(int client_socket) {
-    bool use_json = true;
-    if (use_json) {
-        string serialized_data = receive_message(client_socket);
+////////////////
+/// Handelr Json
+////////////////
 
-        if (serialized_data.empty()) return;
+// 클라이언트 이름 변경
+void handleMessageCSName(int clinet_sock, json& json_message){
+    cout << "Name Change!\n";
 
-        try {
-            json json_message = json::parse(serialized_data);
-            cout << "[C->S: JSON Message received] Data: " << json_message.dump(4) << endl;
-        } catch (const json::parse_error& e) {
-            cerr << "JSON parse error: " << e.what() << endl;
+    string original_name = clientSessions[clinet_sock].name;
+    string name = json_message["name"];
+    {
+        unique_lock<mutex> look(userMutex);
+        if(clientSessions.find(clinet_sock) != clientSessions.end() ){
+            clientSessions[clinet_sock] = name;
         }
+    }
+
+    json json_format;
+    json_format["type"] = "SCSystemMessage";
+    json_format["name"] =  "이름이 " + original_name + "에서" +  name + " 으로 변경되었습니다.";
+
+    send_message(clinet_sock, json_format.dump(4));
+    
+    // 만약 방에 있다면? 모든 유저에게 메시지 전달
+    // notifyRoomMembers()
+}
+
+
+// 채팅방 목록 전송 (복사를 허용한다. 포인터 접근하다가 괜히 사라지면 골치 아파진다)
+void handleMessageCSRooms(int client_sock, json& json_message){
+    json json_format;
+    json_format["type"] = "SCRoomsResult";
+    json_format["rooms"] = json::array();
+
+    for (auto [_, room] : chatRooms) {
+        json room_form = {
+            {"roomId", room.id},
+            {"title", room.title},
+            {"members", json::array()}
+        };
+        unordered_map<int, Clinet> clinets;
+        copy(clientSessions.begin(), clientSessions.end(), inserter(clinets, clinets.end()));
+        for(int member_sock : room.joinedUser){
+            string member_name = clinets[member_sock].name;
+            room_form["members"].push_back(member_name);
+        }
+        json_format["rooms"].push_back(room_form);
+    }
+
+    send_message(client_sock, json_format.dump(4));
+}
+
+// 새로운 방 생성
+void handleMessageCSCreateRoom(int client_sock, json& json_message){
+    string title = json_message["title"];
+    cout << "Create New Rooms!\n";
+    
+
+
+}
+
+// 채팅방 참가
+void handleMessageCSJoinRoom(int client_sock, json& json_message){
+    int roomId = stoi((string)json_message["roomId"]);
+    cout << "Room Join!\n";
+    // todo: 방에 추가
+
+}
+
+
+
+// 방 나가기
+void handleMessageCSLeaveRoom(int client_sock, json& json_message){
+    cout << "Room Leave!\n";
+    // todo: 방에서 삭제
+
+}
+
+// 채팅
+void handleMessageCSChat(int client_sock, json& json_message){
+    cout << "Chat!\n";
+
+
+}
+
+// 서버 종료
+void handleMessageCSShutdown(int client_sock, json& json_message){
+    cout << "Shutdown!\n";
+    serverSutDownHandler(0);   
+}
+
+void notifyRoomMembers(int roomId, int senderSock, const string& message){
+    if(chatRooms.find(roomId) != chatRooms.end()){
+        Room room = chatRooms[roomId];
+        unordered_set<int> userList = room.joinedUser;
+        for(int user_socket : userList){
+            if(user_socket != senderSock){
+                send_message(user_socket, message);
+            }
+        }
+    }
+}
+
+unordered_map<string, function<void(int, json&)>> jsonMessageHandler = {
+    {"CSName", handleMessageCSName },
+    {"CSRooms", handleMessageCSRooms },
+    {"CSCreateRoom", handleMessageCSCreateRoom },
+    {"CSJoinRoom", handleMessageCSJoinRoom },
+    {"CSLeaveRoom", handleMessageCSLeaveRoom },
+    {"CSChat", handleMessageCSChat },
+    {"CSShutdown", handleMessageCSShutdown }
+};
+
+
+///////
+/// handler proto
+///////
+void sendTypeMessage(int client_sock, Type::MessageType msg_type) {
+    Type type;
+    type.set_type(msg_type);
+
+    string serialized_data;
+    if (type.SerializePartialToString(&serialized_data)) {
+        send_message(client_sock, serialized_data);
     } else {
+        cerr << "Failed to serialize message of type " << msg_type << endl;
+    }
+}
+
+
+
+void handleMessageCSNameP(int client_sock, string& proto_message){
+    cout << "Name Change!\n"; 
+    CSName proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+}
+
+void handleMessageCSRoomsP(int client_sock, string& proto_message){
+    cout << "Rooms!\n";
+    SCRoomsResult proto_format;
+
+    for (const auto& [_, room] : chatRooms) {
+        SCRoomsResult::RoomInfo* room_info = proto_format.add_rooms();
+
+        room_info->set_roomid(room.id);
+        room_info->set_title(room.title);
+        
+        for (int member_sock : room.joinedUser) {
+            string member_name = clientSessions[member_sock].name; 
+            room_info->add_members(member_name);
+        }
+    }
+
+    sendTypeMessage(client_sock, Type::SC_ROOMS_RESULT);
+
+    string serialized_data;
+    if (proto_format.SerializeToString(&serialized_data)) {
+        send_message(client_sock, serialized_data); 
+    } else {
+        cerr << "Failed to serialize SCRoomsResult message" << endl;
+    }
+}
+
+void handleMessageCSCreateRoomP(int client_sock, string& proto_message){
+    cout << "Create New Rooms!\n";
+    mju::CSCreateRoom proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+}
+
+void handleMessageCSJoinRoomP(int client_sock, string& proto_message){
+    cout << "Room Join!\n";
+    mju::CSJoinRoom proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+
+
+}
+
+void handleMessageCSLeaveRoomP(int client_sock, string& proto_message){
+    cout << "Room Leave!\n";
+
+    
+}
+
+void handleMessageCSChatP(int client_sock, string& proto_message){
+    cout << "Chat!\n";
+    mju::CSChat proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+
+}
+
+void handleMessageCSShutdownP(int client_sock, string& proto_message){
+    cout << "Shutdown!\n";
+    serverSutDownHandler(0);  
+}
+
+
+
+unordered_map<Type::MessageType, function<void(int, string&)>> protobufMessageHandler = {
+    {Type::CS_NAME, handleMessageCSNameP },
+    {Type::CS_ROOMS, handleMessageCSRoomsP },
+    {Type::CS_CREATE_ROOM, handleMessageCSCreateRoomP },
+    {Type::CS_JOIN_ROOM, handleMessageCSJoinRoomP },
+    {Type::CS_LEAVE_ROOM, handleMessageCSLeaveRoomP },
+    {Type::CS_CHAT, handleMessageCSChatP },
+    {Type::CS_SHUTDOWN, handleMessageCSShutdownP }
+};
+
+void jsonEventHanler(int client_socket){
+    string serialized_data = receive_message(client_socket);
+    if (serialized_data.empty()) return;
+
+    try {
+        json json_message = json::parse(serialized_data);
+        
+        string messageType = json_message["type"];
+        if (jsonMessageHandler.find(messageType) != jsonMessageHandler.end()) {
+            jsonMessageHandler[messageType](client_socket, json_message);
+        } else {
+            cerr << "No handler found for message type: " << messageType << endl;
+        }
+    } catch (const json::parse_error& e) {
+        cerr << "JSON parse error: " << e.what() << endl;
+    }
+}
+
+
+void handleClient(int client_socket) {
+    
+    if (FORMAT == JSON) {
+        jsonEventHanler(client_socket);
+    }
+    else if(FORMAT == PROTOBUF){
         string serialized_data_type = receive_message(client_socket);
         if (serialized_data_type.empty()) return;
-
-        string serialized_data_message = receive_message(client_socket);
-        if (serialized_data_message.empty()) return;
 
         Type incoming_type_msg;
         if (!incoming_type_msg.ParseFromString(serialized_data_type)) {
             cerr << "Protobuf parse error" << endl;
-        } else {
-            
-            switch (incoming_type_msg.type()) {
-                case Type::CS_NAME:
-                    cout << "Handling CS_NAME message in Protobuf" << endl;
-                    break;
-                case Type::CS_CHAT:
-                    cout << "Handling CS_CHAT message in Protobuf" << endl;
-                    break;
-                case Type::CS_SHUTDOWN:
-                    cout << "Handling CS_SHUTDOWN message in Protobuf" << endl;
-                    break;
-                default:
-                    cerr << "Unknown message type received" << endl;
-                    break;
-            }
-            cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
+        } 
+        Type::MessageType messageType = incoming_type_msg.type();
+        cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
+
+        string serialized_data_message = receive_message(client_socket);
+
+
+        if (protobufMessageHandler.find(messageType) != protobufMessageHandler.end()) {
+            protobufMessageHandler[messageType](client_socket, serialized_data_message);
         }
+            
+        
     }
 
-    if (use_json) {
+    /*
+    if (FORMAT == JSON) {
         json json_message = {{"type", "SCSystemMessage"}, {"text", "MESSAGE"}};
         send_message(client_socket, json_message.dump());
     } else {
@@ -134,22 +422,26 @@ void handleClient(int client_socket) {
         response_msg.set_text("Response from server");
         send_message(client_socket, response_msg.SerializeAsString());
     }
-
+    */
     
     {
-        lock_guard<mutex> lock(processingMutex);
+        unique_lock<mutex> lock(processingMutex);
         processingSockets.erase(client_socket);
     }
 }
 
 void worker() {
-    while (true) {
+    while (isRunning.load()) {
         int clientSocket;
         {
             unique_lock<mutex> lock(queueMutex);
             while (clientQueue.empty()) {
                 cv.wait(lock);
+                if(!isRunning.load()){
+                    return;
+                }
             }
+
             clientSocket = clientQueue.front();
             clientQueue.pop();
         }
@@ -157,11 +449,29 @@ void worker() {
     }
 }
 
-int main() {
+
+void configureParameters(const int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        if (strncmp(argv[i], "--port=", 7) == 0) {
+            PORT = stoi(argv[i] + 7);
+        } else if (strncmp(argv[i], "--worker=", 9) == 0) {
+            WORKER = stoi(argv[i] + 9); 
+        } else if (strncmp(argv[i], "--format=", 9) == 0) {
+            string format = argv[i] + 9;
+            FORMAT = (format == "json");
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
     int server_fd, new_socket;
     sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
+
+    configureParameters(argc, argv);
+
+    signal(SIGINT, serverSutDownHandler);
 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
@@ -190,40 +500,55 @@ int main() {
     cout << "Server listening on port " << PORT << endl;
 
     vector<thread> workers;
-    for (int i = 0; i < 1; ++i) {
+    for (int i = 0; i < WORKER; ++i) {
+        cout << "Thread 생성 " << i << "\n";
         workers.emplace_back(worker);
     }
 
     fd_set readfds;
 
-    while (true) {
+    while (isRunning.load()) {
+
         FD_ZERO(&readfds);
         FD_SET(server_fd, &readfds);
         int max_sd = server_fd;
 
-        // 기존 클라이언트 소켓들을 FD_SET에 추가
         for (auto& [sock, _] : clientSessions) {
             FD_SET(sock, &readfds);
             max_sd = max(max_sd, sock);
         }
-        int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+
+        struct timeval timeout = {1, 0};
+        int activity = select(max_sd + 1, &readfds, NULL, NULL, &timeout);
         if (activity < 0) {
+            if (errno == EINTR) continue;
             perror("select error");
+            break;
         }
 
-        // 새로운 클라이언트 요청 처리
+        if (!isRunning.load()) break;
+
         if (FD_ISSET(server_fd, &readfds)) {
             if ((new_socket = accept(server_fd, (sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
-                perror("accept");
-                exit(EXIT_FAILURE);
+                if (isRunning.load()) perror("accept");
+                break;
             }
-            clientSessions[new_socket] = "";
-            cout << "New client connected, socket: " << new_socket << endl;
+            
+            string clientIP = inet_ntoa(address.sin_addr);
+            int clientPort = ntohs(address.sin_port);
+            cout << "Client Connect: Ip_" << clientIP << " Port_" << clientPort << "\n";
+
+            string default_name = "(" + clientIP + ", " + to_string(clientPort) + ")";
+            {
+                unique_lock<mutex> lock(queueMutex);
+                clientSessions.insert({new_socket, Clinet(default_name)});
+            }
         }
 
-        for(auto& [client_socket, _] : clientSessions){
-            if (FD_ISSET(client_socket, &readfds)  ) {
-                lock_guard<mutex> lock(processingMutex);
+        for (auto& [client_socket, _] : clientSessions) {
+            if (FD_ISSET(client_socket, &readfds)) 
+            {
+                unique_lock<mutex> lock(processingMutex);
                 if (processingSockets.find(client_socket) == processingSockets.end()) {
                     processingSockets.insert(client_socket);
                     {
@@ -236,9 +561,17 @@ int main() {
         }
     }
 
+    isRunning.store(false);
+    cv.notify_all();
     for (auto& worker : workers) {
+        cout << "Thread join" << "\n";
         worker.join();
     }
+    for (auto& [client_fd, _] : clientSessions) {
+        close(client_fd);
+    }
+    close(server_fd);
+    cout << "Server ShutDown";
 
     return 0;
 }
