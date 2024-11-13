@@ -30,10 +30,10 @@ class Room;
 
 atomic<bool> isRunning(true);
 
-mutex queueMutex, processingMutex;
+mutex workerQueueMutex, processingMutex;
 mutex userMutex, roomMutex;
-condition_variable cv;
-queue<int> clientQueue;
+condition_variable workerQueueCV;
+queue<int> workerQueue;
 
 unordered_map<int, Client> clientSessions; 
 unordered_set<int> processingSockets;
@@ -85,13 +85,13 @@ public:
 // 서버 종료
 void serverSutDownHandler(int sig) {
     isRunning.store(false);
-    cv.notify_all();
+    workerQueueCV.notify_all();
 }
 
 // 연결 종료한 클라이언트
 void disconnectedClient(int closed_socket){
     {
-        unique_lock<mutex> lock(queueMutex);
+        unique_lock<mutex> lock(workerQueueMutex);
         clientSessions.erase(closed_socket);
     }
     close(closed_socket);
@@ -538,7 +538,6 @@ void handleMessageCSChatP(int client_sock, string& proto_message){
     mju::SCChat chatMessage;
     chatMessage.set_member(client.name);
     chatMessage.set_text(text);
-    sendProtoMessage(client_sock, Type::SC_CHAT, chatMessage);
     
     notifyRoomMembers(client.enterRoom, client_sock, Type::SC_CHAT, chatMessage);
 
@@ -633,16 +632,16 @@ void worker() {
     while (isRunning.load()) {
         int clientSocket;
         {
-            unique_lock<mutex> lock(queueMutex);
-            while (clientQueue.empty()) {
-                cv.wait(lock);
+            unique_lock<mutex> lock(workerQueueMutex);
+            while (workerQueue.empty()) {
+                workerQueueCV.wait(lock);
                 if(!isRunning.load()){
                     return;
                 }
             }
 
-            clientSocket = clientQueue.front();
-            clientQueue.pop();
+            clientSocket = workerQueue.front();
+            workerQueue.pop();
         }
         handleClient(clientSocket);
     }
@@ -739,7 +738,7 @@ int main(int argc, char* argv[]) {
 
             string default_name = "(" + clientIP + ", " + to_string(clientPort) + ")";
             {
-                unique_lock<mutex> lock(queueMutex);
+                unique_lock<mutex> lock(workerQueueMutex);
                 clientSessions.insert({new_socket, Client(default_name)});
             }
         }
@@ -751,17 +750,17 @@ int main(int argc, char* argv[]) {
                 if (processingSockets.find(client_socket) == processingSockets.end()) {
                     processingSockets.insert(client_socket);
                     {
-                        unique_lock<mutex> lock(queueMutex);
-                        clientQueue.push(client_socket);
+                        unique_lock<mutex> lock(workerQueueMutex);
+                        workerQueue.push(client_socket);
                     }
-                    cv.notify_one();
+                    workerQueueCV.notify_one();
                 }
             }
         }
     }
 
     isRunning.store(false);
-    cv.notify_all();
+    workerQueueCV.notify_all();
     for (auto& worker : workers) {
         cout << "Thread join" << "\n";
         worker.join();
