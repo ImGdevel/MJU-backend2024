@@ -1,4 +1,4 @@
-*.vscode
+.vs
+.vscode
 */__pycache__
 /producer_consumer
-/chat_client
