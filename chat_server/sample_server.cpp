@@ -18,13 +18,14 @@
 using namespace mju;
 using namespace std;
 using json = nlohmann::json;
+using ProtoMessage = google::protobuf::Message;
 
 #define MAX_CLIENTS 5
 
 #define JSON 1
 #define PROTOBUF 0
 
-class Clinet;
+class Client;
 class Room;
 
 atomic<bool> isRunning(true);
@@ -34,37 +35,46 @@ mutex userMutex, roomMutex;
 condition_variable cv;
 queue<int> clientQueue;
 
-unordered_map<int, Clinet> clientSessions; 
+unordered_map<int, Client> clientSessions; 
 unordered_set<int> processingSockets;
 
 unordered_map<int, Room> chatRooms;
+static int maxRoomId = 1;
+
 
 static int WORKER = 4;
 static int FORMAT = JSON; 
 static int PORT = 10114;
 
 
-class Clinet{
+class Client{
 public:
-    Clinet(){
-        cout << "불리면 안됨";
-    }
+    Client(){}
 
-    Clinet(const string& name){
+    Client(const string& name){
         this->name = name;
         enterRoom = 0;
     }
 
-    Clinet(const Clinet& other) {
+    Client(const Client& other) {
         this->name = other.name;
         this->enterRoom = other.enterRoom;  
     }
+
+    bool isClientInAnyRoom(){
+        return enterRoom > 0;
+    }
+
     string name;
     int enterRoom;
 };
 
 class Room{
 public:
+    Room(){}
+
+    Room(int id, string title) : id(id) , title(title){}
+
     int id;
     string title;
     unordered_set<int> joinedUser;
@@ -72,20 +82,19 @@ public:
 
 
 
-
-
+// 서버 종료
 void serverSutDownHandler(int sig) {
     isRunning.store(false);
     cv.notify_all();
 }
 
 // 연결 종료한 클라이언트
-void disconnectedClinet(int sock){
+void disconnectedClient(int closed_socket){
     {
         unique_lock<mutex> lock(queueMutex);
-        clientSessions.erase(sock);
+        clientSessions.erase(closed_socket);
     }
-    close(sock);
+    close(closed_socket);
 }
 
 
@@ -115,7 +124,7 @@ string receive_message(int client_socket) {
     if (length_received != sizeof(length_buffer)) {
         if (length_received == 0) {
             cerr << "Client disconnected" << endl;
-            disconnectedClinet(client_socket);
+            disconnectedClient(client_socket);
             return "";
         } else {
             perror("Failed to receive message length");
@@ -149,35 +158,86 @@ string receive_message(int client_socket) {
     return serialized_data;
 }
 
+////////
+/// process
+////////
+
+// 클라이언트 이름 변경
+void changeNameProcess(int client_id, string new_name){
+    {
+        unique_lock<mutex> look(userMutex);
+        if(clientSessions.find(client_id) != clientSessions.end() ){
+            clientSessions[client_id].name = new_name;
+        }
+    }
+}
+
+// 채팅방 생성
+void createRoomProcess(int client_id, string room_title){
+    {
+        unique_lock<mutex> look(roomMutex);
+        int room_id = maxRoomId;
+        chatRooms[room_id] = Room(room_id, room_title) ;
+        chatRooms[room_id].joinedUser.insert(client_id);
+        clientSessions[client_id].enterRoom = room_id;
+        maxRoomId++;
+    }
+}
+
+// 채팅방 입장
+void joinRoomProcess(int clinet_id, int roomId){
+    {
+        unique_lock<mutex> look(roomMutex);
+        if(chatRooms.find(roomId) == chatRooms.end()){
+            return;
+        }
+        chatRooms[roomId].joinedUser.insert(clinet_id);
+    }
+    clientSessions[clinet_id].enterRoom = roomId;
+}
+
+// 채팅방 퇴장
+void leaveRoomProcess(int clinet_id, int roomId){
+    {
+        unique_lock<mutex> look(roomMutex);
+        if(chatRooms.find(roomId) == chatRooms.end()){
+            return;
+        }
+        chatRooms[roomId].joinedUser.erase(clinet_id);
+    }
+    clientSessions[clinet_id].enterRoom = 0;
+}
+
+
 ////////////////
 /// Handelr Json
 ////////////////
 
+void notifyRoomMembers(int, int, const string);
+
 // 클라이언트 이름 변경
-void handleMessageCSName(int clinet_sock, json& json_message){
+void handleMessageCSName(int client_sock, json& json_message){
     cout << "Name Change!\n";
 
-    string original_name = clientSessions[clinet_sock].name;
-    string name = json_message["name"];
-    {
-        unique_lock<mutex> look(userMutex);
-        if(clientSessions.find(clinet_sock) != clientSessions.end() ){
-            clientSessions[clinet_sock] = name;
-        }
-    }
+    Client client = clientSessions[client_sock];
+    string original_name = client.name;
+    string new_name = json_message["name"];
+
+    changeNameProcess(client_sock, new_name);
 
     json json_format;
     json_format["type"] = "SCSystemMessage";
-    json_format["name"] =  "이름이 " + original_name + "에서" +  name + " 으로 변경되었습니다.";
+    json_format["text"] =  "이름이 " + original_name + "에서 " +  new_name + " 으로 변경되었습니다.";
 
-    send_message(clinet_sock, json_format.dump(4));
+    send_message(client_sock, json_format.dump(4));
     
-    // 만약 방에 있다면? 모든 유저에게 메시지 전달
-    // notifyRoomMembers()
+    if(client.isClientInAnyRoom()){
+        notifyRoomMembers(client.enterRoom, client_sock, json_format.dump(4));
+    }
 }
 
 
-// 채팅방 목록 전송 (복사를 허용한다. 포인터 접근하다가 괜히 사라지면 골치 아파진다)
+// 채팅방 목록 전송 (복사를 허용한다. 포인터 접근하다가 메모리 헤제되면 골치 아파진다)
 void handleMessageCSRooms(int client_sock, json& json_message){
     json json_format;
     json_format["type"] = "SCRoomsResult";
@@ -189,10 +249,10 @@ void handleMessageCSRooms(int client_sock, json& json_message){
             {"title", room.title},
             {"members", json::array()}
         };
-        unordered_map<int, Clinet> clinets;
-        copy(clientSessions.begin(), clientSessions.end(), inserter(clinets, clinets.end()));
+        unordered_map<int, Client> clients;
+        copy(clientSessions.begin(), clientSessions.end(), inserter(clients, clients.end()));
         for(int member_sock : room.joinedUser){
-            string member_name = clinets[member_sock].name;
+            string member_name = clients[member_sock].name;
             room_form["members"].push_back(member_name);
         }
         json_format["rooms"].push_back(room_form);
@@ -204,43 +264,94 @@ void handleMessageCSRooms(int client_sock, json& json_message){
 // 새로운 방 생성
 void handleMessageCSCreateRoom(int client_sock, json& json_message){
     string title = json_message["title"];
-    cout << "Create New Rooms!\n";
     
+    createRoomProcess(client_sock, title);
 
-
+    json json_format;
+    json_format["type"] = "SCSystemMessage";
+    json_format["text"] =  "방제[" + title + "] 방에 입장했습니다.";
+    send_message(client_sock, json_format.dump(4));
 }
 
 // 채팅방 참가
 void handleMessageCSJoinRoom(int client_sock, json& json_message){
-    int roomId = stoi((string)json_message["roomId"]);
-    cout << "Room Join!\n";
-    // todo: 방에 추가
+    json json_format;
+    json_format["type"] = "SCSystemMessage";
 
+    int roomId = json_message["roomId"];
+    Client client = clientSessions[client_sock];
+    
+    if(client.isClientInAnyRoom()){
+        json_format["text"] =  "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
+        send_message(client_sock, json_format.dump(4));
+        return;
+    }
+    if(chatRooms.find(roomId) == chatRooms.end()){
+        json_format["text"] =  "대화방이 존재하지 않습니다.";
+        send_message(client_sock, json_format.dump(4));
+        return;
+    }
+    string roomTitle = chatRooms[roomId].title;
+    joinRoomProcess(client_sock, roomId);
+    
+    json_format["text"] =  "방제[" + roomTitle + "] 방에 입장했습니다.";
+    send_message(client_sock, json_format.dump(4));
+    
+    json_format["text"] =  "[" + client.name + "] 님이 입장했습니다.";
+    notifyRoomMembers(roomId, client_sock, json_format.dump(4));
 }
 
 
 
 // 방 나가기
 void handleMessageCSLeaveRoom(int client_sock, json& json_message){
-    cout << "Room Leave!\n";
-    // todo: 방에서 삭제
+    json json_format;
+    json_format["type"] = "SCSystemMessage";
 
+    Client client = clientSessions[client_sock];
+    int roomId = client.enterRoom;
+    if(!client.isClientInAnyRoom()){
+        json_format["text"] =  "현재 대화방에 들어가 있지 않습니다.";
+        send_message(client_sock, json_format.dump(4));
+        return;
+    }
+    leaveRoomProcess(client_sock, roomId);
+    
+
+    json_format["text"] =  "방제[" + chatRooms[roomId].title + "] 대화 방에서 퇴장했습니다.";
+    send_message(client_sock, json_format.dump(4));
+
+    json_format["text"] =  "[" + client.name + "] 님이 퇴장했습니다.";
+    notifyRoomMembers(roomId, client_sock, json_format.dump(4));
 }
 
 // 채팅
 void handleMessageCSChat(int client_sock, json& json_message){
-    cout << "Chat!\n";
+    json json_format;
+    string text = json_message["text"];
 
+    Client client = clientSessions[client_sock];
+    int roomId = client.enterRoom;
+    if(!client.isClientInAnyRoom()){
+        json_format["type"] = "SCSystemMessage";
+        json_format["text"] =  "현재 대화방에 들어가 있지 않습니다.";
+        send_message(client_sock, json_format.dump(4));
+        return;
+    }
 
+    json_format["type"] = "SCChat";
+    json_format["text"] =  text;
+    json_format["member"] =  client.name;
+    notifyRoomMembers(roomId, client_sock, json_format.dump(4));
 }
 
 // 서버 종료
 void handleMessageCSShutdown(int client_sock, json& json_message){
-    cout << "Shutdown!\n";
     serverSutDownHandler(0);   
 }
 
-void notifyRoomMembers(int roomId, int senderSock, const string& message){
+// 
+void notifyRoomMembers(int roomId, int senderSock, const string message){
     if(chatRooms.find(roomId) != chatRooms.end()){
         Room room = chatRooms[roomId];
         unordered_set<int> userList = room.joinedUser;
@@ -251,6 +362,197 @@ void notifyRoomMembers(int roomId, int senderSock, const string& message){
         }
     }
 }
+
+
+
+
+///////
+/// handler proto
+///////
+
+
+// 통일된 메시지 전송 메서드
+void sendProtoMessage(int client_sock, Type::MessageType msg_type, const ProtoMessage& proto_msg) {
+    Type type;
+    type.set_type(msg_type);
+
+    string serialized_type;
+    if (type.SerializePartialToString(&serialized_type)) {
+        send_message(client_sock, serialized_type);
+    } else {
+        cerr << "Failed to serialize Type message with type " << msg_type << endl;
+        return;
+    }
+
+    string serialized_msg;
+    if (proto_msg.SerializeToString(&serialized_msg)) {
+        send_message(client_sock, serialized_msg);
+    } else {
+        cerr << "Failed to serialize data message" << endl;
+    }
+}
+
+
+void notifyRoomMembers(int roomId, int senderSock, Type::MessageType msg_type,  const ProtoMessage& message){
+    if(chatRooms.find(roomId) != chatRooms.end()){
+        Room room = chatRooms[roomId];
+        unordered_set<int> userList = room.joinedUser;
+        for(int user_socket : userList){
+            if(user_socket != senderSock){
+                sendProtoMessage(user_socket, msg_type, message);
+            }
+        }
+    }
+}
+
+
+// 이름 변경
+void handleMessageCSNameP(int client_sock, string& proto_message){
+    cout << "Name Change!\n"; 
+    CSName proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+    Client client = clientSessions[client_sock];
+    string original_name = client.name;
+    string new_name = proto_format.name();
+
+    changeNameProcess(client_sock, new_name);
+
+    SCSystemMessage response_msg;
+    response_msg.set_text( "이름이 " + original_name + "에서 " +  new_name + " 으로 변경되었습니다.");
+    sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+
+    if(client.isClientInAnyRoom()){
+        notifyRoomMembers(client.enterRoom, client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+    }
+}
+
+
+// 채팅방 리스트
+void handleMessageCSRoomsP(int client_sock, string& proto_message){
+    cout << "Rooms!\n";
+    SCRoomsResult response_msg;
+
+    for (const auto& [_, room] : chatRooms) {
+        SCRoomsResult::RoomInfo* room_info = response_msg.add_rooms();
+
+        room_info->set_roomid(room.id);
+        room_info->set_title(room.title);
+        
+        for (int member_sock : room.joinedUser) {
+            string member_name = clientSessions[member_sock].name; 
+            room_info->add_members(member_name);
+        }
+    }
+
+    sendProtoMessage(client_sock, Type::SC_ROOMS_RESULT, response_msg);
+}
+
+// 방 생성
+void handleMessageCSCreateRoomP(int client_sock, string& proto_message){
+    cout << "Create New Rooms!\n";
+    mju::CSCreateRoom proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+    string title = proto_format.title();
+
+    createRoomProcess(client_sock, title);
+
+    mju::SCSystemMessage response_msg;
+    response_msg.set_text("방제[" + title + "] 방에 입장했습니다.");
+    sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+}
+
+void handleMessageCSJoinRoomP(int client_sock, string& proto_message){
+    cout << "Room Join!\n";
+    mju::CSJoinRoom proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+
+    mju::SCSystemMessage response_msg;
+    int roomId = proto_format.roomid();
+    Client client = clientSessions[client_sock];
+    
+    if(client.isClientInAnyRoom()){
+        response_msg.set_text("대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.");
+        sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+        return;
+    }
+    if(chatRooms.find(roomId) == chatRooms.end()){
+        response_msg.set_text("대화방이 존재하지 않습니다.");
+        sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+        return;
+    }
+    string roomTitle = chatRooms[roomId].title;
+    joinRoomProcess(client_sock, roomId);
+    
+    response_msg.set_text("방제[" + roomTitle + "] 방에 입장했습니다.");
+    sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+    
+    response_msg.set_text("[" + client.name + "] 님이 입장했습니다.");
+    notifyRoomMembers(client.enterRoom, client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+}
+
+void handleMessageCSLeaveRoomP(int client_sock, string& proto_message){
+    cout << "Room Leave!\n";
+
+    SCSystemMessage response_msg;
+    Client client = clientSessions[client_sock];
+    int roomId = client.enterRoom;
+    if(!client.isClientInAnyRoom()){
+        response_msg.set_text( "현재 대화방에 들어가 있지 않습니다.");
+        sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+        return;
+    }
+    leaveRoomProcess(client_sock, roomId);
+    
+
+    response_msg.set_text("방제[" + chatRooms[roomId].title + "] 대화 방에서 퇴장했습니다.");
+    sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+
+    response_msg.set_text("[" + client.name + "] 님이 퇴장했습니다.");
+    notifyRoomMembers(client.enterRoom, client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+}
+
+void handleMessageCSChatP(int client_sock, string& proto_message){
+    cout << "Chat!\n";
+    mju::CSChat proto_format;
+    if(!proto_format.ParseFromString(proto_message)){
+        perror("Not match type!");
+    }
+
+    SCSystemMessage response_msg;
+    string text = proto_format.text();
+    Client client = clientSessions[client_sock];
+    int roomId = client.enterRoom;
+
+    if(!client.isClientInAnyRoom()){
+        response_msg.set_text("현재 대화방에 들어가 있지 않습니다.");
+        sendProtoMessage(client_sock, Type::SC_SYSTEM_MESSAGE, response_msg);
+        return;
+    }
+
+    mju::SCChat chatMessage;
+    chatMessage.set_member(client.name);
+    chatMessage.set_text(text);
+    sendProtoMessage(client_sock, Type::SC_CHAT, chatMessage);
+    
+    notifyRoomMembers(client.enterRoom, client_sock, Type::SC_CHAT, chatMessage);
+
+}
+
+void handleMessageCSShutdownP(int client_sock, string& proto_message){
+    cout << "Shutdown!\n";
+    serverSutDownHandler(0);  
+}
+
+
+/////// 
+/// handler
+///////
 
 unordered_map<string, function<void(int, json&)>> jsonMessageHandler = {
     {"CSName", handleMessageCSName },
@@ -263,97 +565,6 @@ unordered_map<string, function<void(int, json&)>> jsonMessageHandler = {
 };
 
 
-///////
-/// handler proto
-///////
-void sendTypeMessage(int client_sock, Type::MessageType msg_type) {
-    Type type;
-    type.set_type(msg_type);
-
-    string serialized_data;
-    if (type.SerializePartialToString(&serialized_data)) {
-        send_message(client_sock, serialized_data);
-    } else {
-        cerr << "Failed to serialize message of type " << msg_type << endl;
-    }
-}
-
-
-
-void handleMessageCSNameP(int client_sock, string& proto_message){
-    cout << "Name Change!\n"; 
-    CSName proto_format;
-    if(!proto_format.ParseFromString(proto_message)){
-        perror("Not match type!");
-    }
-}
-
-void handleMessageCSRoomsP(int client_sock, string& proto_message){
-    cout << "Rooms!\n";
-    SCRoomsResult proto_format;
-
-    for (const auto& [_, room] : chatRooms) {
-        SCRoomsResult::RoomInfo* room_info = proto_format.add_rooms();
-
-        room_info->set_roomid(room.id);
-        room_info->set_title(room.title);
-        
-        for (int member_sock : room.joinedUser) {
-            string member_name = clientSessions[member_sock].name; 
-            room_info->add_members(member_name);
-        }
-    }
-
-    sendTypeMessage(client_sock, Type::SC_ROOMS_RESULT);
-
-    string serialized_data;
-    if (proto_format.SerializeToString(&serialized_data)) {
-        send_message(client_sock, serialized_data); 
-    } else {
-        cerr << "Failed to serialize SCRoomsResult message" << endl;
-    }
-}
-
-void handleMessageCSCreateRoomP(int client_sock, string& proto_message){
-    cout << "Create New Rooms!\n";
-    mju::CSCreateRoom proto_format;
-    if(!proto_format.ParseFromString(proto_message)){
-        perror("Not match type!");
-    }
-}
-
-void handleMessageCSJoinRoomP(int client_sock, string& proto_message){
-    cout << "Room Join!\n";
-    mju::CSJoinRoom proto_format;
-    if(!proto_format.ParseFromString(proto_message)){
-        perror("Not match type!");
-    }
-
-
-}
-
-void handleMessageCSLeaveRoomP(int client_sock, string& proto_message){
-    cout << "Room Leave!\n";
-
-    
-}
-
-void handleMessageCSChatP(int client_sock, string& proto_message){
-    cout << "Chat!\n";
-    mju::CSChat proto_format;
-    if(!proto_format.ParseFromString(proto_message)){
-        perror("Not match type!");
-    }
-
-}
-
-void handleMessageCSShutdownP(int client_sock, string& proto_message){
-    cout << "Shutdown!\n";
-    serverSutDownHandler(0);  
-}
-
-
-
 unordered_map<Type::MessageType, function<void(int, string&)>> protobufMessageHandler = {
     {Type::CS_NAME, handleMessageCSNameP },
     {Type::CS_ROOMS, handleMessageCSRoomsP },
@@ -364,7 +575,7 @@ unordered_map<Type::MessageType, function<void(int, string&)>> protobufMessageHa
     {Type::CS_SHUTDOWN, handleMessageCSShutdownP }
 };
 
-void jsonEventHanler(int client_socket){
+void jsonEventHandler(int client_socket){
     string serialized_data = receive_message(client_socket);
     if (serialized_data.empty()) return;
 
@@ -382,48 +593,36 @@ void jsonEventHanler(int client_socket){
     }
 }
 
+void protobufEventHandler(int client_socket){
+    string serialized_data_type = receive_message(client_socket);
+    if (serialized_data_type.empty()) return;
+
+    Type incoming_type_msg;
+    if (!incoming_type_msg.ParseFromString(serialized_data_type)) {
+        cerr << "Protobuf parse error" << endl;
+    } 
+    Type::MessageType messageType = incoming_type_msg.type();
+    cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
+
+    string serialized_data_message = receive_message(client_socket);
+
+    if (protobufMessageHandler.find(messageType) != protobufMessageHandler.end()) {
+        protobufMessageHandler[messageType](client_socket, serialized_data_message);
+    } else {
+        cerr << "No handler found for message type: " << messageType << endl;
+    }
+}
+
 
 void handleClient(int client_socket) {
     
     if (FORMAT == JSON) {
-        jsonEventHanler(client_socket);
+        jsonEventHandler(client_socket);
     }
     else if(FORMAT == PROTOBUF){
-        string serialized_data_type = receive_message(client_socket);
-        if (serialized_data_type.empty()) return;
-
-        Type incoming_type_msg;
-        if (!incoming_type_msg.ParseFromString(serialized_data_type)) {
-            cerr << "Protobuf parse error" << endl;
-        } 
-        Type::MessageType messageType = incoming_type_msg.type();
-        cout << "[C->S: Protobuf Message received] Data: " << incoming_type_msg.ShortDebugString() << endl;
-
-        string serialized_data_message = receive_message(client_socket);
-
-
-        if (protobufMessageHandler.find(messageType) != protobufMessageHandler.end()) {
-            protobufMessageHandler[messageType](client_socket, serialized_data_message);
-        }
-            
-        
+        protobufEventHandler(client_socket);
     }
 
-    /*
-    if (FORMAT == JSON) {
-        json json_message = {{"type", "SCSystemMessage"}, {"text", "MESSAGE"}};
-        send_message(client_socket, json_message.dump());
-    } else {
-        Type response_type_msg;
-        response_type_msg.set_type(Type::SC_SYSTEM_MESSAGE);
-        send_message(client_socket, response_type_msg.SerializeAsString());
-
-        SCSystemMessage response_msg;
-        response_msg.set_text("Response from server");
-        send_message(client_socket, response_msg.SerializeAsString());
-    }
-    */
-    
     {
         unique_lock<mutex> lock(processingMutex);
         processingSockets.erase(client_socket);
@@ -541,7 +740,7 @@ int main(int argc, char* argv[]) {
             string default_name = "(" + clientIP + ", " + to_string(clientPort) + ")";
             {
                 unique_lock<mutex> lock(queueMutex);
-                clientSessions.insert({new_socket, Clinet(default_name)});
+                clientSessions.insert({new_socket, Client(default_name)});
             }
         }
 
