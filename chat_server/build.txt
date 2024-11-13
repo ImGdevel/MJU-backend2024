@@ -1,1 +1,0 @@
-g++ sample_server.cpp message.pb.cc -o sample_server -lprotobuf
