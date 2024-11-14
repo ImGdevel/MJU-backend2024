@@ -20,8 +20,6 @@ using namespace std;
 using json = nlohmann::json;
 using ProtoMessage = google::protobuf::Message;
 
-#define MAX_CLIENTS 5
-
 #define JSON 1
 #define PROTOBUF 0
 
@@ -83,9 +81,6 @@ void serverShutdownHandler(int sig) {
 
 // 연결 종료한 클라이언트
 void disconnectClient(int closedSocket) {
-
-
-
     {
         unique_lock<mutex> lock(workerQueueMutex);
         clientSessions.erase(closedSocket);
@@ -121,7 +116,7 @@ string receiveMessage(int clientSocket) {
 
     if (lengthReceived != sizeof(lengthBuffer)) {
         if (lengthReceived == 0) {
-            cerr << "Client disconnected" << endl;
+            perror("Client disconnected ");
             disconnectClient(clientSocket);
             return "";
         } else {
@@ -204,6 +199,15 @@ void leaveRoomProcess(int clientId, int roomId) {
     clientSessions[clientId].enterRoomId = 0;
 }
 
+
+
+//////////////
+// 원래는 MessageHandler 인터페이스를 만들고 
+// 타입에 따라 Json OR Proto Handler를 선택하는 방식으로 설계할 목적이었으나.
+// (즉 Strategy Pattern)
+// 단일 파일 버전에서는 임시 방편으로 그냥 아래와 같이 구현하였다.
+//////////////
+
 ////////////////
 /// Json 핸들러
 ////////////////
@@ -216,7 +220,13 @@ void sendToRoomMembers(int roomId, int senderSock, const string& message){
         unordered_set<int> userList = room.joinedUsers;
         for(int userSocket : userList){
             if(userSocket != senderSock){
-                sendMessage(userSocket, message);
+                try{
+                    sendMessage(userSocket, message);
+                }catch(const runtime_error){
+
+                }
+
+                
             }
         }
     }
@@ -291,7 +301,7 @@ void handleMessageCSJoinRoom(int clientSock, string& requestMessage){
     json jsonData = json::parse(requestMessage);
     int roomId = jsonData["roomId"];
     Client client = clientSessions[clientSock];
-
+    
     json jsonFormat;
     jsonFormat["type"] = "SCSystemMessage";
     
@@ -318,11 +328,12 @@ void handleMessageCSJoinRoom(int clientSock, string& requestMessage){
 // JSON 방 나가기
 void handleMessageCSLeaveRoom(int clientSock, string& requestMessage){
 
+    Client client = clientSessions[clientSock];
+    int roomId = client.enterRoomId;
+
     json jsonFormat;
     jsonFormat["type"] = "SCSystemMessage";
 
-    Client client = clientSessions[clientSock];
-    int roomId = client.enterRoomId;
     if(!client.isClientInAnyRoom()){
         jsonFormat["text"] = "현재 대화방에 들어가 있지 않습니다.";
         sendMessage(clientSock, jsonFormat.dump());
@@ -404,6 +415,8 @@ void sendToRoomMembers(int roomId, int senderSock, Type::MessageType msg_type,  
         }
     }
 }
+
+//// ** 원래는 Proto 헨들러의 이름도 Json헨들러와 이름이 같아야한다. 하지만 현제 클래스로 묶고 있지 않음으로 임시적으로 P를 붙인다.
 
 // ProtoBuf 클라이언트 이름 변경
 void handleMessageCSNameP(int clientSock, string& requestMessage){
@@ -552,7 +565,7 @@ void handleMessageCSShutdownP(int clientSock, string& requestMessage){
 /// 메시지 핸들러
 //////
 
-unordered_map<string, function<void(int, json&)>> requestMessageHandler = {
+unordered_map<string, function<void(int, string&)>> requestMessageHandler = {
     {"CSName", handleMessageCSName },
     {"CSRooms", handleMessageCSRooms },
     {"CSCreateRoom", handleMessageCSCreateRoom },
@@ -561,7 +574,6 @@ unordered_map<string, function<void(int, json&)>> requestMessageHandler = {
     {"CSChat", handleMessageCSChat },
     {"CSShutdown", handleMessageCSShutdown }
 };
-
 
 unordered_map<Type::MessageType, function<void(int, string&)>> protobufMessageHandler = {
     {Type::CS_NAME, handleMessageCSNameP },
@@ -581,8 +593,9 @@ void handleJsonEvent(int clientSocket){
     try {
         json requestMessage = json::parse(serializedData);
         string messageType = requestMessage["type"];
+        // 메시지 헨들러
         if (requestMessageHandler.find(messageType) != requestMessageHandler.end()) {
-            requestMessageHandler[messageType](clientSocket, requestMessage);
+            requestMessageHandler[messageType](clientSocket, serializedData);
         } else {
             cerr << "No handler found for message type: " << messageType << endl;
         }
@@ -605,6 +618,7 @@ void handleProtobufEvent(int clientSocket){
 
     string serializedDataMessage = receiveMessage(clientSocket);
 
+    // 메시지 헨들러
     if (protobufMessageHandler.find(messageType) != protobufMessageHandler.end()) {
         protobufMessageHandler[messageType](clientSocket, serializedDataMessage);
     } else {
@@ -612,20 +626,6 @@ void handleProtobufEvent(int clientSocket){
     }
 }
 
-// 클라이언트 핸들러
-void handleClient(int clientSocket) {
-    if (FORMAT == JSON) {
-        handleJsonEvent(clientSocket);
-    }
-    else if(FORMAT == PROTOBUF){
-        handleProtobufEvent(clientSocket);
-    }
-
-    {
-        unique_lock<mutex> lock(processingMutex);
-        processingSockets.erase(clientSocket);
-    }
-}
 
 // 워커 쓰레드 함수
 void worker() {
@@ -642,7 +642,19 @@ void worker() {
             clientSocket = workerQueue.front();
             workerQueue.pop();
         }
-        handleClient(clientSocket);
+
+        // 포멧에 따라 처리하는 헨들러가 다르다.
+        if (FORMAT == JSON) {
+            handleJsonEvent(clientSocket); 
+        }
+        else if(FORMAT == PROTOBUF){
+            handleProtobufEvent(clientSocket);
+        }
+
+        {
+            unique_lock<mutex> lock(processingMutex);
+            processingSockets.erase(clientSocket);
+        }
     }
 }
 
@@ -685,23 +697,23 @@ int main(int argc, char* argv[]) {
     sin.sin_port = htons(SERVER_PORT);
 
     if (bind(serverSocket, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
-        perror("bind failed");
+        perror("bind() failed");
         exit(EXIT_FAILURE);
     }
 
-    if (listen(serverSocket, MAX_CLIENTS) < 0) {
-        perror("listen failed");
+    if (listen(serverSocket, 10) < 0) {
+        perror("listen() failed");
         exit(EXIT_FAILURE);
     }
-
-    cout << "Server listening on port " << SERVER_PORT << endl;
 
     int workerCount;
     vector<thread> workers;
     for (workerCount = 0; workerCount < WORKER; ++workerCount) {
         workers.emplace_back(worker);
     }
-    cout << "Worker " << workerCount << "개 생성됨\n";
+
+    string format = (FORMAT) ? "json" : "protobuf";
+    cout << "Server listening on port " << SERVER_PORT << " message format :" << format << "worker : "<< workerCount  << endl;
 
     fd_set readfds;
 
