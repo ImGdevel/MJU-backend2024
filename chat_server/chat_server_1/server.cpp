@@ -83,6 +83,9 @@ void serverShutdownHandler(int sig) {
 
 // 연결 종료한 클라이언트
 void disconnectClient(int closedSocket) {
+
+
+
     {
         unique_lock<mutex> lock(workerQueueMutex);
         clientSessions.erase(closedSocket);
@@ -220,11 +223,13 @@ void sendToRoomMembers(int roomId, int senderSock, const string& message){
 }
 
 // JSON 클라이언트 이름 변경
-void handleMessageCSName(int clientSock, json& requestMessage){
+void handleMessageCSName(int clientSock, string& requestMessage){
+
+    json jsonData = json::parse(requestMessage);
 
     Client client = clientSessions[clientSock];
     string originalName = client.name;
-    string newName = requestMessage["name"];
+    string newName = jsonData["name"];
 
     changeNameProcess(clientSock, newName);
 
@@ -240,7 +245,7 @@ void handleMessageCSName(int clientSock, json& requestMessage){
 }
 
 // JSON 채팅방 목록 전송
-void handleMessageCSRooms(int clientSock, json& requestMessage){
+void handleMessageCSRooms(int clientSock, string& requestMessage){
 
     json jsonFormat;
     jsonFormat["type"] = "SCRoomsResult";
@@ -266,9 +271,10 @@ void handleMessageCSRooms(int clientSock, json& requestMessage){
 }
 
 // JSON 새로운 방 생성
-void handleMessageCSCreateRoom(int clientSock, json& requestMessage){
+void handleMessageCSCreateRoom(int clientSock, string& requestMessage){
 
-    string title = requestMessage["title"];
+    json jsonData = json::parse(requestMessage);
+    string title = jsonData["title"];
 
     createRoomProcess(clientSock, title);
 
@@ -280,13 +286,14 @@ void handleMessageCSCreateRoom(int clientSock, json& requestMessage){
 }
 
 // JSON 채팅방 참가
-void handleMessageCSJoinRoom(int clientSock, json& requestMessage){
+void handleMessageCSJoinRoom(int clientSock, string& requestMessage){
+
+    json jsonData = json::parse(requestMessage);
+    int roomId = jsonData["roomId"];
+    Client client = clientSessions[clientSock];
 
     json jsonFormat;
     jsonFormat["type"] = "SCSystemMessage";
-
-    int roomId = requestMessage["roomId"];
-    Client client = clientSessions[clientSock];
     
     if(client.isClientInAnyRoom()){
         jsonFormat["text"] = "대화 방에 있을 때는 다른 방에 들어갈 수 없습니다.";
@@ -309,7 +316,7 @@ void handleMessageCSJoinRoom(int clientSock, json& requestMessage){
 }
 
 // JSON 방 나가기
-void handleMessageCSLeaveRoom(int clientSock, json& requestMessage){
+void handleMessageCSLeaveRoom(int clientSock, string& requestMessage){
 
     json jsonFormat;
     jsonFormat["type"] = "SCSystemMessage";
@@ -331,13 +338,15 @@ void handleMessageCSLeaveRoom(int clientSock, json& requestMessage){
 }
 
 // JSON 채팅
-void handleMessageCSChat(int clientSock, json& requestMessage){
+void handleMessageCSChat(int clientSock, string& requestMessage){
 
-    json jsonFormat;
-    string text = requestMessage["text"];
-
+    json jsonData = json::parse(requestMessage);
+    string text = jsonData["text"];
     Client client = clientSessions[clientSock];
     int roomId = client.enterRoomId;
+
+    json jsonFormat;
+
     if(!client.isClientInAnyRoom()){
         jsonFormat["type"] = "SCSystemMessage";
         jsonFormat["text"] = "현재 대화방에 들어가 있지 않습니다.";
@@ -352,7 +361,7 @@ void handleMessageCSChat(int clientSock, json& requestMessage){
 }
 
 // JSON 서버 종료
-void handleMessageCSShutdown(int clientSock, json& requestMessage){
+void handleMessageCSShutdown(int clientSock, string& requestMessage){
     serverShutdownHandler(0);   
 }
 
@@ -692,7 +701,7 @@ int main(int argc, char* argv[]) {
     for (workerCount = 0; workerCount < WORKER; ++workerCount) {
         workers.emplace_back(worker);
     }
-    cout << "Worker " << workerCount << " 생성됨\n";
+    cout << "Worker " << workerCount << "개 생성됨\n";
 
     fd_set readfds;
 
