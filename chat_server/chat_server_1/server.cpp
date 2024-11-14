@@ -79,10 +79,14 @@ void serverShutdownHandler(int sig) {
     workerQueueCV.notify_all();
 }
 
-// 연결 종료한 클라이언트
+// 클라이언트 연결 종료
 void disconnectClient(int closedSocket) {
     {
-        unique_lock<mutex> lock(workerQueueMutex);
+        unique_lock<mutex> lock(roomMutex);
+        chatRooms.erase(closedSocket);
+    }
+    {
+        unique_lock<mutex> lock(userMutex);
         clientSessions.erase(closedSocket);
     }
     close(closedSocket);
@@ -165,13 +169,17 @@ void changeNameProcess(int clientId, const string& newName) {
 
 // 채팅방 생성
 void createRoomProcess(int clientId, const string& roomTitle) {
+    int roomId = maxRoomId;
     {
         unique_lock<mutex> look(roomMutex);
         int roomId = maxRoomId;
         chatRooms[roomId] = Room(roomId, roomTitle);
         chatRooms[roomId].joinedUsers.insert(clientId);
-        clientSessions[clientId].enterRoomId = roomId;
         maxRoomId++;
+    }
+    {
+        unique_lock<mutex> look(userMutex);
+        clientSessions[clientId].enterRoomId = roomId;
     }
 }
 
@@ -184,7 +192,10 @@ void joinRoomProcess(int clientId, int roomId) {
         }
         chatRooms[roomId].joinedUsers.insert(clientId);
     }
-    clientSessions[clientId].enterRoomId = roomId;
+    {
+        unique_lock<mutex> look(userMutex);
+        clientSessions[clientId].enterRoomId = roomId;
+    }
 }
 
 // 채팅방 퇴장
@@ -196,7 +207,10 @@ void leaveRoomProcess(int clientId, int roomId) {
         }
         chatRooms[roomId].joinedUsers.erase(clientId);
     }
-    clientSessions[clientId].enterRoomId = 0;
+    {
+        unique_lock<mutex> look(userMutex);
+        clientSessions[clientId].enterRoomId = 0;
+    }
 }
 
 
@@ -220,13 +234,7 @@ void sendToRoomMembers(int roomId, int senderSock, const string& message){
         unordered_set<int> userList = room.joinedUsers;
         for(int userSocket : userList){
             if(userSocket != senderSock){
-                try{
-                    sendMessage(userSocket, message);
-                }catch(const runtime_error){
-
-                }
-
-                
+                sendMessage(userSocket, message);
             }
         }
     }
@@ -286,10 +294,18 @@ void handleMessageCSCreateRoom(int clientSock, string& requestMessage){
     json jsonData = json::parse(requestMessage);
     string title = jsonData["title"];
 
-    createRoomProcess(clientSock, title);
-
     json jsonFormat;
     jsonFormat["type"] = "SCSystemMessage";
+
+    Client client = clientSessions[clientSock];
+    if(client.isClientInAnyRoom()){
+        jsonFormat["text"] = "대화 방에 있을 때는 방을 개설 할 수 없습니다.";
+        sendMessage(clientSock, jsonFormat.dump());
+        return;
+    }
+
+    createRoomProcess(clientSock, title);
+    
     jsonFormat["text"] = "방제[" + title + "] 방에 입장했습니다.";
     sendMessage(clientSock, jsonFormat.dump());
 
@@ -468,10 +484,17 @@ void handleMessageCSCreateRoomP(int clientSock, string& requestMessage){
         perror("Not match type!");
     }
     string title = protoFormat.title();
+    Client client = clientSessions[clientSock];
+
+    SCSystemMessage responseMsg;
+    if(client.isClientInAnyRoom()){
+        responseMsg.set_text("대화 방에 있을 때는 방을 개설 할 수 없습니다.");
+        sendProtoMessage(clientSock, Type::SC_SYSTEM_MESSAGE, responseMsg);
+        return;
+    }
 
     createRoomProcess(clientSock, title);
 
-    SCSystemMessage responseMsg;
     responseMsg.set_text("방제[" + title + "] 방에 입장했습니다.");
     sendProtoMessage(clientSock, Type::SC_SYSTEM_MESSAGE, responseMsg);
 }
