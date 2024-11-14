@@ -73,24 +73,9 @@ public:
     unordered_set<int> joinedUsers;
 };
 
-// 서버 종료
-void serverShutdownHandler(int sig) {
-    isServerRunning.store(false);
-    workerQueueCV.notify_all();
-}
 
-// 클라이언트 연결 종료
-void disconnectClient(int closedSocket) {
-    {
-        unique_lock<mutex> lock(roomMutex);
-        chatRooms.erase(closedSocket);
-    }
-    {
-        unique_lock<mutex> lock(userMutex);
-        clientSessions.erase(closedSocket);
-    }
-    close(closedSocket);
-}
+void disconnectClient(int);
+void serverShutdownHandler(int);
 
 // 메시지 전송
 void sendMessage(int clientSocket, const string& serializedData) {
@@ -583,6 +568,20 @@ void handleMessageCSShutdownP(int clientSock, string& requestMessage){
 }
 
 
+// 클라이언트 연결 종료
+void disconnectClient(int closedSocket) {
+    int roomId = clientSessions[closedSocket].enterRoomId;
+    {
+        unique_lock<mutex> lock(roomMutex);
+        chatRooms[roomId].joinedUsers.erase(closedSocket);
+    }
+    {
+        unique_lock<mutex> lock(userMutex);
+        clientSessions.erase(closedSocket);
+    }
+    close(closedSocket);
+}
+
 
 //////
 /// 메시지 핸들러
@@ -666,7 +665,7 @@ void worker() {
             workerQueue.pop();
         }
 
-        // 포멧에 따라 처리하는 헨들러가 다르다.
+        // 포멧에 따라 처리하는 헨들러가 다르다. 원래는 전략 패턴을 사용해서 구현한다.
         if (FORMAT == JSON) {
             handleJsonEvent(clientSocket); 
         }
@@ -679,6 +678,12 @@ void worker() {
             processingSockets.erase(clientSocket);
         }
     }
+}
+
+// 서버 강제 종료 인터럽트
+void serverShutdownHandler(int sig) {
+    isServerRunning.store(false);
+    workerQueueCV.notify_all();
 }
 
 // 명령줄 인자를 통해 서버 매개변수 설정
