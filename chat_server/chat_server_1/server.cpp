@@ -741,9 +741,7 @@ int main(int argc, char* argv[]) {
     }
 
     string format = (FORMAT) ? "json" : "protobuf";
-    cout << "Server listening on port " << SERVER_PORT << endl;
-    cout << "message format : " << format << endl;
-    cout << "worker : " << workerCount  << endl;
+    cout << "Server listening on port " << SERVER_PORT << " message format :" << format << "worker : "<< workerCount  << endl;
 
     fd_set readfds;
 
@@ -803,7 +801,7 @@ int main(int argc, char* argv[]) {
     isServerRunning.store(false);
     workerQueueCV.notify_all();
     for (auto& worker : workers) {
-        cout << "thread finished...\n";
+        cout << "Thread 종료\n";
         worker.join();
     }
     for (auto& [clientFd, _] : clientSessions) {
