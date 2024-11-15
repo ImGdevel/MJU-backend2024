@@ -1,5 +1,45 @@
 
-# Chat Server 기능 구현 리스트
+# 프로그램 설명
+
+
+### 서버 프로그램
+/MJU-backend2024/chat_server/server
+
+실행
+```
+$ server
+```
+
+### 아래는 서버 실행 옵션입니다.
+
+서버 포트 번호 지정 (기본값=10114)
+```
+$ server --port=10114
+```
+
+서버 포맷 지정 (기본값=json)
+```
+$ server --port=json // 혹은 protobuf
+```
+
+Woker(thread)수 지정 (기본값=4)
+```
+$ server --worker=4 // 혹은 protobuf
+```
+
+
+참고 사항)
+// 원래는 MessageHandler 인터페이스를 만들고 
+// 타입에 따라 Json OR Proto Handler를 객체를 설정한 뒤 handler proto, json 전부 통일하려 했으나
+// (Strategy Pattern 혹은 Factory Pattern)
+// 좀 그렇지만 디자인패턴 적용 안하고 메서드로만 분리했습니다. 
+// (디자인 패턴 적용하기엔 요구사항에서 너무 벗어나는 것 같아서 두기로 했습니다)
+
+
+
+
+
+# Chat Server 기능 구현 리스트 (메모)
 
 ## 클라이언트와 서버가 통신하도록 한다
 
