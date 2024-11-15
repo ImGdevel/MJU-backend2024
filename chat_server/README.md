@@ -2,7 +2,7 @@
 # 프로그램 설명
 
 
-### 서버 프로그램
+### 서버 프로그램 실행 파일
 /MJU-backend2024/chat_server/server
 
 실행
@@ -26,16 +26,34 @@ Woker(thread)수 지정 (기본값=4)
 ```
 $ server --worker=4 // 혹은 protobuf
 ```
-
+<br>
 
 ```
-참고 사항)
+## 참고 사항
 // 원래는 MessageHandler 인터페이스를 만들고 
 // 타입에 따라 Json OR Proto Handler를 객체를 설정한 뒤 handler proto, json 전부 통일하려 했으나
 // (Strategy Pattern 혹은 Factory Pattern)
 // 좀 그렇지만 디자인패턴 적용 안하고 메서드로만 분리했습니다. 
 // (디자인 패턴 적용하기엔 요구사항에서 너무 벗어나는 것 같아서 두기로 했습니다)
 ```
+<br>
+
+### 자가진단표
+
+
+[✔️] worker thread 를 2개 이상으로 지정할 수 있도록 프로그래밍했는지 여부
+[✔️] worker thread 가 2개 이상일 때 위의 명령어들이 제대로 동작하는지 여부 (= synchronization 이 제대로 구현되었는지)
+  [✔️] /rooms
+  [✔️] /nmae 방 안 밖 변경, 방에서 했을시 모두 공지
+  [✔️] /create 생성하고 입장
+  [✔️] /join 입장시 모두 알림
+  [✔️] /leave 방나가기 및 모두 알림
+  [✔️] /shutdown 서버 종료 (서버 종료까지 1초 이내 종료됨)
+[✔️] 둘 이상의 채팅 방에 유저들이 나눠 들어가 있는 경우 대화방 간 간섭 없이 제대로 채팅이 되는지 여부
+[✔️] I/O multiplexing 적용 여부
+[✔️] producer-consumer 적용 여부 (= queue, mutex, condition variable 사용 여부)
+[✔️] Message handler map 적용 여부
+[✔️] JSON 과 Protobuf 둘 다 지원하는지 여부
 
 <br>
 
