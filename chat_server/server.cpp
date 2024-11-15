@@ -94,7 +94,7 @@ void sendMessage(int clientSocket, const string& serializedData) {
         return;
     }
 
-    printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msgLength, msgLength, serializedData.c_str());
+    //printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msgLength, msgLength, serializedData.c_str());
 }
 
 // 메시지 수신
@@ -134,7 +134,7 @@ string receiveMessage(int clientSocket) {
         dataReceived += moreData;
     }
 
-    printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msgLength, msgLength, serializedData.c_str());
+    //printf("Recv [C->S:총길이=%d바이트] %x(메시지크기) %s\n", msgLength, msgLength, serializedData.c_str());
     return serializedData;
 }
 
@@ -405,7 +405,6 @@ void sendProtoMessage(int clientSock, Type::MessageType msgType, const ProtoMess
 
 // 모든 사용자에게 전송
 void sendToRoomMembers(int roomId, int senderSock, Type::MessageType msg_type,  const ProtoMessage& message){
-
     if(chatRooms.find(roomId) != chatRooms.end()){
         Room room = chatRooms[roomId];
         unordered_set<int> userList = room.joinedUsers;
@@ -511,9 +510,9 @@ void handleMessageCSJoinRoomP(int clientSock, string& requestMessage){
     
     responseMsg.set_text("방제[" + roomTitle + "] 방에 입장했습니다.");
     sendProtoMessage(clientSock, Type::SC_SYSTEM_MESSAGE, responseMsg);
-    
+
     responseMsg.set_text("[" + client.name + "] 님이 입장했습니다.");
-    sendToRoomMembers(client.enterRoomId, clientSock, Type::SC_SYSTEM_MESSAGE, responseMsg);
+    sendToRoomMembers(roomId, clientSock, Type::SC_SYSTEM_MESSAGE, responseMsg);
 }
 
 // ProtoBuf 방 나가기
@@ -636,7 +635,6 @@ void handleProtobufEvent(int clientSocket){
         cerr << "Protobuf parse error" << endl;
     } 
     Type::MessageType messageType = incomingTypeMsg.type();
-    cout << "[C->S: Protobuf Message received] Data: " << incomingTypeMsg.ShortDebugString() << endl;
 
     string serializedDataMessage = receiveMessage(clientSocket);
 
@@ -695,7 +693,15 @@ void configureParameters(const int argc, char* argv[]) {
             WORKER = stoi(argv[i] + 9); 
         } else if (strncmp(argv[i], "--format=", 9) == 0) {
             string format = argv[i] + 9;
-            FORMAT = (format == "json");
+            if(format == "json"){
+                FORMAT = JSON;
+            }else if(format == "protobuf"){
+                FORMAT = PROTOBUF;
+            }else{
+                perror("invalid --format");
+                exit(EXIT_FAILURE);
+            }
+            
         }
     }
 }
@@ -775,7 +781,7 @@ int main(int argc, char* argv[]) {
             
             string clientIP = inet_ntoa(sin.sin_addr);
             int clientPort = ntohs(sin.sin_port);
-            cout << "Client Connect: Ip = " << clientIP << " Port = " << clientPort << "Socket = " << clinetSocket << "\n";
+            cout << "Client Connect: Ip = " << clientIP << " | Port = " << clientPort << " | Socket = " << clinetSocket << "\n";
 
             string defaultName = "(" + clientIP + ", " + to_string(clientPort) + ")";
             {
