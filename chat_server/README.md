@@ -41,22 +41,27 @@ $ server --worker=4 // 혹은 protobuf
 ### 자가진단표
 
 
-[✔️] worker thread 를 2개 이상으로 지정할 수 있도록 프로그래밍했는지 여부
-[✔️] worker thread 가 2개 이상일 때 위의 명령어들이 제대로 동작하는지 여부 (= synchronization 이 제대로 구현되었는지)
-  [✔️] /rooms
-  [✔️] /nmae 방 안 밖 변경, 방에서 했을시 모두 공지
-  [✔️] /create 생성하고 입장
-  [✔️] /join 입장시 모두 알림
-  [✔️] /leave 방나가기 및 모두 알림
-  [✔️] /shutdown 서버 종료 (서버 종료까지 1초 이내 종료됨)
-[✔️] 둘 이상의 채팅 방에 유저들이 나눠 들어가 있는 경우 대화방 간 간섭 없이 제대로 채팅이 되는지 여부
-[✔️] I/O multiplexing 적용 여부
-[✔️] producer-consumer 적용 여부 (= queue, mutex, condition variable 사용 여부)
-[✔️] Message handler map 적용 여부
-[✔️] JSON 과 Protobuf 둘 다 지원하는지 여부
+- [✔️] worker thread 를 2개 이상으로 지정할 수 있도록 프로그래밍했는지 여부<br>
+- [✔️] worker thread 가 2개 이상일 때 위의 명령어들이 제대로 동작하는지 여부 (= synchronization 이 제대로 구현되었는지)<br>
+    - [✔️] /rooms<br>
+    - [✔️] /nmae 방 안 밖 변경, 방에서 했을시 모두 공지<br>
+    - [✔️] /create 생성하고 입장<br>
+    - [✔️] /join 입장시 모두 알림<br>
+    - [✔️] /leave 방나가기 및 모두 알림<br>
+    - [✔️] /shutdown 서버 종료 (서버 종료까지 1초 이내 종료됨)<br>
+- [✔️] 둘 이상의 채팅 방에 유저들이 나눠 들어가 있는 경우 대화방 간 간섭 없이 제대로 채팅이 되는지 여부<br>
+- [✔️] I/O multiplexing 적용 여부<br>
+- [✔️] producer-consumer 적용 여부 (= queue, mutex, condition variable 사용 여부)<br>
+- [✔️] Message handler map 적용 여부<br>
+- [✔️] JSON 과 Protobuf 둘 다 지원하는지 여부<br>
 
 <br>
 
+미구현 선택적 요구사항
+- 방폭파
+- 클라 종료시 방 맴버에게 공지 (방은 제대로 탈퇴됨)
+
+<br>
 
 # Chat Server 기능 구현 리스트 (메모)
 
