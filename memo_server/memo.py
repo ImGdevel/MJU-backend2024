@@ -16,6 +16,7 @@ naver_redirect_uri = 'http://mjubackend.duckdns.org:10114/auth'
 
 user_id_map = {}
 temp_db = {}
+temp_db_memo = {}
 
 @app.route('/')
 def home():
@@ -29,7 +30,7 @@ def home():
     # TODO: 아래 부분을 채워 넣으시오.
     #       userId 로부터 DB 에서 사용자 이름을 얻어오는 코드를 여기에 작성해야 함
     #임시 작성
-    if not userId is None:
+    if not userId is None and userId in user_id_map:
         userId = user_id_map[userId]
         name = temp_db[userId]
     ####################################################
@@ -121,9 +122,10 @@ def onOAuthAuthorizationCodeRedirected():
 
     random_key = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
     user_id_map[random_key] = user_id
+    user_id = random_key
 
     response = redirect('/')
-    response.set_cookie('userId', random_key)
+    response.set_cookie('userId', user_id)
     return response
 
 
@@ -131,6 +133,12 @@ def save_user_to_db(user_id, user_name):
     print("DB에 유저 저장", user_id, user_name)
     temp_db[user_id] = user_name
 
+
+
+memo_list = [
+    {"text" : "test"},
+    {"text" : "bold"}
+]
 
 @app.route('/memo', methods=['GET'])
 def get_memos():
@@ -140,7 +148,7 @@ def get_memos():
         return redirect('/')
 
     # TODO: DB 에서 해당 userId 의 메모들을 읽어오도록 아래를 수정한다.
-    result = []
+    result = memo_list
 
     # memos라는 키 값으로 메모 목록 보내주기
     return {'memos': result}
@@ -158,8 +166,16 @@ def post_new_memo():
         abort(HTTPStatus.BAD_REQUEST)
 
     # TODO: 클라이언트로부터 받은 JSON 에서 메모 내용을 추출한 후 DB에 userId 의 메모로 추가한다.
+    data = request.get_json()  # JSON 데이터 추출
+    text = data.get('text')    # text 값 추출
 
-    #
+    if not text:
+        abort(HTTPStatus.BAD_REQUEST)
+
+    memo_list.append({
+        "text": text
+    })
+
     return '', HTTPStatus.OK
 
 
