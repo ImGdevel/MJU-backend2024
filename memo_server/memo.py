@@ -68,6 +68,8 @@ def onOAuthAuthorizationCodeRedirected():
     authorization_code = request.args.get('code')
     state = request.args.get('state')
 
+    if not authorization_code or not state:
+        return "Invalid request: Missing code or state", 400
 
     # 2. authorization code 로부터 access token 을 얻어내는 네이버 API 를 호출한다.
     token_url = "https://nid.naver.com/oauth2.0/token"
@@ -79,6 +81,9 @@ def onOAuthAuthorizationCodeRedirected():
         'state': state
     }
     response_access_token = requests.post(token_url, data=token_params)
+    if response_access_token.status_code != 200:
+        return "Failed to obtain access token", 500
+    
     access_token = response_access_token.json().get('access_token')
 
     if not access_token:
@@ -91,11 +96,17 @@ def onOAuthAuthorizationCodeRedirected():
         "Authorization": f"Bearer {access_token}"
     }
     response_user_profile = requests.get(api_url, headers=headers)
+    if response_user_profile.status_code != 200:
+        return "Failed to fetch user profile", 500
 
     # 4. 얻어낸 user id 와 name 을 DB 에 저장한다.
     profile_data = response_user_profile.json()
     user_id = profile_data['response']['id']
     user_name = profile_data['response']['name']
+    
+    if not user_id or not user_name:
+        return "User ID or name not found", 500
+    
     save_user_to_db(user_id, user_name)
 
     # 5. 첫 페이지로 redirect 하는데 로그인 쿠키를 설정하고 보내준다.
