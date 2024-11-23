@@ -14,6 +14,8 @@ naver_client_id = 'Fhx9wb8Fjsn3IkJguo9r'
 naver_client_secret = 'ADPhH5Bppy'
 naver_redirect_uri = 'http://mjubackend.duckdns.org:10114/auth'
 
+user_id_map = {}
+temp_db = {}
 
 @app.route('/')
 def home():
@@ -23,13 +25,13 @@ def home():
     # (참고: 아래 onOAuthAuthorizationCodeRedirected() 마지막 부분 response.set_cookie('userId', user_id) 참고)
     userId = request.cookies.get('userId', default=None)
     name = None
-
     ####################################################
     # TODO: 아래 부분을 채워 넣으시오.
     #       userId 로부터 DB 에서 사용자 이름을 얻어오는 코드를 여기에 작성해야 함
-
-
-
+    #임시 작성
+    if not userId is None:
+        userId = user_id_map[userId]
+        name = temp_db[userId]
     ####################################################
 
 
@@ -57,7 +59,6 @@ def onLogin():
     return redirect(url)
 
 
-user_id_map = {}
 
 # 아래는 Authorization code 가 발급된 뒤 Redirect URI 를 통해 호출된다.
 @app.route('/auth')
@@ -128,6 +129,7 @@ def onOAuthAuthorizationCodeRedirected():
 
 def save_user_to_db(user_id, user_name):
     print("DB에 유저 저장", user_id, user_name)
+    temp_db[user_id] = user_name
 
 
 @app.route('/memo', methods=['GET'])

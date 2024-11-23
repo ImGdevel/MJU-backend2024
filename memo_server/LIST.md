@@ -135,10 +135,11 @@ $ sudo apt-get install docker.io
    - [ ] 조회된 유저 이름을 `index.html` template에 반영
 
 2. **onOAuthAuthorizationCodeRedirected()**
-   - [ ] OAuth 2.0 인증 코드 수신 및 처리
-   - [ ] 네이버 API를 통한 엑세스 토큰 요청 구현
+   - [v] OAuth 2.0 인증 코드 수신 및 처리
+   - [v] 네이버 API를 통한 엑세스 토큰 요청 구현
    - [ ] 엑세스 토큰으로 사용자 정보 조회 기능 구현
-   - [ ] DB에 유저 정보 저장 및 세션/쿠키 설정
+   - [ ] DB에 유저 정보 저장 
+   - [v] 세션/쿠키 설정
 
 3. **getMemos()**
    - [ ] 로그인 유저의 메모 조회 기능 구현
