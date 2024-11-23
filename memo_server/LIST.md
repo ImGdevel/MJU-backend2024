@@ -130,7 +130,7 @@ $ sudo apt-get install docker.io
 
 ## **Part1: memo.py 구현 점검**
 1. **home()**
-   - [ ] `userId` 쿠키 확인 여부 구현
+   - [v] `userId` 쿠키 확인 여부 구현 (이미 구현됨)
    - [ ] DB에서 `userId`에 해당하는 유저 이름 조회 기능 구현
    - [ ] 조회된 유저 이름을 `index.html` template에 반영
 

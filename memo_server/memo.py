@@ -3,18 +3,16 @@ import random
 import requests
 import json
 import urllib
+import string
 
 from flask import abort, Flask, make_response, render_template, Response, redirect, request
 
 app = Flask(__name__)
 
 
-naver_client_id = 'developers.naver.com 에 등록한 본인 app 의 것으로 교체할 것'
-naver_client_secret = 'developers.naver.com 에 등록한 본인 app 의 것으로 교체할 것'
-naver_redirect_uri = '''
-  실습서버에서 사용할 경우 http://mjubackend.duckdns.org:본인포트번호/auth 로 하고,
-  AWS 에 배포할 때는 http://본인로드밸런서의DNS주소/auth 로 할 것.
-'''
+naver_client_id = 'Fhx9wb8Fjsn3IkJguo9r'
+naver_client_secret = 'ADPhH5Bppy'
+naver_redirect_uri = 'http://mjubackend.duckdns.org:10114/auth'
 
 
 @app.route('/')
@@ -59,27 +57,46 @@ def onLogin():
     return redirect(url)
 
 
+user_id_map = {}
+
 # 아래는 Authorization code 가 발급된 뒤 Redirect URI 를 통해 호출된다.
 @app.route('/auth')
 def onOAuthAuthorizationCodeRedirected():
     # TODO: 아래 1 ~ 4 를 채워 넣으시오.
 
     # 1. redirect uri 를 호출한 request 로부터 authorization code 와 state 정보를 얻어낸다.
-
+    authorization_code = request.args.get('code')
+    state = request.args.get('state')
 
 
     # 2. authorization code 로부터 access token 을 얻어내는 네이버 API 를 호출한다.
+    token_url = "https://nid.naver.com/oauth2.0/token"
+    token_params = {
+        'grant_type': 'authorization_code',
+        'client_id': naver_client_id,
+        'client_secret': naver_client_secret,
+        'code': authorization_code,
+        'state': state
+    }
+    response_access_token = requests.post(token_url, data=token_params)
+    access_token = response_access_token.json().get('access_token')
 
-
+    if not access_token:
+        return "Access token not found", 500
 
     # 3. 얻어낸 access token 을 이용해서 프로필 정보를 반환하는 API 를 호출하고,
     #    유저의 고유 식별 번호를 얻어낸다.
-
+    api_url = 'https://openapi.naver.com/v1/nid/me'
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    response_user_profile = requests.get(api_url, headers=headers)
 
     # 4. 얻어낸 user id 와 name 을 DB 에 저장한다.
-    user_id = None
-    user_name = None
-
+    profile_data = response_user_profile.json()
+    user_id = profile_data['response']['id']
+    user_name = profile_data['response']['name']
+    save_user_to_db(user_id, user_name)
 
     # 5. 첫 페이지로 redirect 하는데 로그인 쿠키를 설정하고 보내준다.
     #    user_id 쿠키는 "dkmoon" 처럼 정말 user id 를 바로 집어 넣는 것이 아니다.
@@ -89,9 +106,17 @@ def onOAuthAuthorizationCodeRedirected():
     #          key = random string 으로 얻어낸 a1f22bc347ba3 이런 문자열
     #          user_id_map[key] = real_user_id
     #          user_id = key
+
+    random_key = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    user_id_map[random_key] = user_id
+
     response = redirect('/')
-    response.set_cookie('userId', user_id)
+    response.set_cookie('userId', random_key)
     return response
+
+
+def save_user_to_db(user_id, user_name):
+    print("DB에 유저 저장", user_id, user_name)
 
 
 @app.route('/memo', methods=['GET'])
