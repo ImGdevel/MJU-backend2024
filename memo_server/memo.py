@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 naver_client_id = 'Fhx9wb8Fjsn3IkJguo9r'
 naver_client_secret = 'ADPhH5Bppy'
-naver_redirect_uri = 'http://mjubackend.duckdns.org:10114/auth'
+naver_redirect_uri = 'http://mjubackend.duckdns.org/auth'
 
 user_id_map = {}
 temp_db = {}
@@ -166,8 +166,8 @@ def post_new_memo():
         abort(HTTPStatus.BAD_REQUEST)
 
     # TODO: 클라이언트로부터 받은 JSON 에서 메모 내용을 추출한 후 DB에 userId 의 메모로 추가한다.
-    data = request.get_json()  # JSON 데이터 추출
-    text = data.get('text')    # text 값 추출
+    data = request.get_json()
+    text = data.get('text')
 
     if not text:
         abort(HTTPStatus.BAD_REQUEST)
