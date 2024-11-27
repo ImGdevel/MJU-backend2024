@@ -9,6 +9,7 @@ post) edis에서 랜덤키에 해당하는 userid를 받아온 뒤 DB에 메모�
 
 간단한 Error 메시지와 Database 연결 부분은 GPT의 도움을 받았습니다. 
 
+<br>
 
 ## Database 설명
  
@@ -24,6 +25,7 @@ MySQL을 사용하기 위해서 추가적으로 flask_sqlalchemy 설치가 필�
 $ pip install flask_sqlalchemy
 ```
 
+<br>
 
 ## AWS 설명
 
@@ -39,6 +41,7 @@ Web-Server-Dev와 자동 생성된 서버와 차이가 없긴 하지만
 Web-Server-Dev는 8000번 포트로 열어두었기 떄문에 웹서지스 이용시 8000번 포트로 접근해야합니다.
 자동 생성된 서버는 로드 밸런서 DNS로 접근가능합니다.
 
+<br>
 
 ## 사이트 접속
 
@@ -48,10 +51,11 @@ Web-Server-Dev는 8000번 포트로 열어두었기 떄문에 웹서지스 이�
 http://memo-server-load-balancer-823271627.ap-northeast-2.elb.amazonaws.com/memo/
 ```
 
+<br><br><br><br>
 
-# 구현 자가 진단 리스트
+## 구현 자가 진단 리스트
 
-## **memo.py 구현 점검**
+### **memo.py 구현 점검**
 1. **home()**
    - [V] DB에서 `userId`에 해당하는 유저 이름 조회 기능 구현
    - [V] 조회된 유저 이름을 `index.html` template에 반영
@@ -101,13 +105,13 @@ http://memo-server-load-balancer-823271627.ap-northeast-2.elb.amazonaws.com/memo
    - [V] 최소 1대, 최대 2대 서버 생성으로 Auto Scaling Group 설정
    - [V] 서버 상태에 따라 Auto Scaling 동작 확인
 
-## **최종 점검**
+### **최종 점검**
 - [V] `GET /memo` API 호출 정상 동작
 - [V] `POST /memo` API 호출 정상 동작
 - [V] 네이버 OAuth 기능 정상 작동
 - [V] Application Load Balancer의 DNS 주소에서 서비스 접속 가능
 - [V] 제출물(GitHub repo) 구성 및 README 작성 완료
 
-## **추가 유의사항**
+### **추가 유의사항**
 - [V] authoried key에 교수 public key 추가
 - [V] 네이버 로그인 API에 mjubackend 추가 
