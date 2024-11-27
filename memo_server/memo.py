@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 naver_client_id = 'Fhx9wb8Fjsn3IkJguo9r'
 naver_client_secret = 'ADPhH5Bppy'
-naver_redirect_uri = 'http://mjubackend.duckdns.org/auth'
+naver_redirect_uri = 'http://mjubackend.duckdns.org:10114/auth'
 
 user_id_map = {}
 temp_db = {}
