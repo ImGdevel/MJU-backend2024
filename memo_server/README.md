@@ -26,9 +26,12 @@ MySQL은 3306 포트를, Redis는 6379 포트를 사용합니다.
 SQLAlchemy ORM을 사용하기 떄문에
 MySQL을 사용하기 위해서 추가적으로 flask_sqlalchemy 설치가 필요 합니다.
 
+
 ```
 $ pip install flask_sqlalchemy
 ```
+
+서비스서버에는 이미 설치되었으니 별도로 설치하실 필요 없습니다.
 
 <br>
 
