@@ -2,15 +2,16 @@
 
 ## 코드 설명
 
-home) Redis에서 랜덤키에 해당하는 userid를 받아온뒤 DB에서 유저 정보를 가져옵니다.
+home : Redis에서 랜덤키에 해당하는 userid를 받아온뒤 DB에서 유저 정보를 가져옵니다.
 
-auth) 네이버 로그인 API를 통해 로그인합니다.
+auth :  네이버 로그인 API를 통해 로그인합니다.
 
-get) Redis에서 랜덤키에 해당하는 userid를 받아온 뒤 DB에 메모를 가져옵니다.
+get : Redis에서 랜덤키에 해당하는 userid를 받아온 뒤 DB에 메모를 가져옵니다.
 
-post) edis에서 랜덤키에 해당하는 userid를 받아온 뒤 DB에 메모를 저장합니다.
+post : edis에서 랜덤키에 해당하는 userid를 받아온 뒤 DB에 메모를 저장합니다.
 
-간단한 Error 메시지와 Database 연결 부분은 GPT의 도움을 받았습니다. 
+
+* 간단한 Error 메시지와 Database 연결 부분은 GPT의 도움을 받았습니다. 
 
 <br>
 
@@ -35,17 +36,16 @@ $ pip install flask_sqlalchemy
 
 인스턴스
 
-Web-Server-Dev는 개발용 서비스 서버
+Name이 붙지 않은 두개의 서버가 AutoScaleing으로 자동생성된 **서비스 서버**입니다. 
 
-DB-Server는 데이터베이스(MySQL, Redis) 서버입니다.
+DB-Server는 **데이터베이스(MySQL, Redis) 서버**입니다.
 
-Name이 붙지 않은 두개의 서버가 AutoScaleing으로 자동생성된 서버입니다. 
+Web-Server-Dev는 개발용 서비스 서버입니다. (테스트 용으로 남겨둔 서버이니 무시하시면 됩니다.)
 
-Web-Server-Dev와 자동 생성된 서버와 차이가 없긴 하지만 
+... Web-Server-Dev와 자동 생성된 서버와 차이가 없긴 하지만 Web-Server-Dev는 8000번 포트로 열어두었기 떄문에 웹서지스 이용시 8000번 포트로 접근해야합니다.
 
-Web-Server-Dev는 8000번 포트로 열어두었기 떄문에 웹서지스 이용시 8000번 포트로 접근해야합니다.
 
-자동 생성된 서버는 로드 밸런서 DNS로 접근가능합니다.
+**자동 생성된 서버는 로드 밸런서 DNS로 접근가능합니다.**
 
 <br>
 
